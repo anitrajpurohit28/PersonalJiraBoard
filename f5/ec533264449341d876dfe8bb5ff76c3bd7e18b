@@ -1,0 +1,49 @@
+.gitignore
+  s_0ef04e87823535::t_0ce7555d5b790d 1-25
+app/api/tasks/[id]/updates/[updateId]/route.ts
+  s_0ef04e87823535::t_67d1835bae0d48 1-101
+app/api/tasks/[id]/updates/route.ts
+  s_0ef04e87823535::t_c4478530715df2 1-47
+app/api/tasks/route.ts
+  s_0ef04e87823535::t_158469f2ae5534 1-66
+app/personal-dashboard/WorkflowButtons.tsx
+  s_0ef04e87823535::t_6d3748258eb692 1-4
+app/personal-dashboard/useDetailPosition.ts
+  s_0ef04e87823535::t_38cd980fda5073 1-25
+app/styles/personal-board.css
+  s_0ef04e87823535::t_b5d46b0724ab0a 1-227
+config/ui-settings.mjs
+  s_0ef04e87823535::t_399b1be09bb3d5 1-7
+config/ui.json
+  s_0ef04e87823535::t_94c8f979c86d3c 1-3
+db/index.ts
+  s_0ef04e87823535::t_bf30bc2dd504ac 1-6
+package-lock.json
+  s_0ef04e87823535::t_7a90a2c7164546 1-8830
+tests/board-tasks.test.mjs
+  s_0ef04e87823535::t_9bc82e8380eb36 1-88
+tests/bulk-tasks.test.mjs
+  s_0ef04e87823535::t_15ae167ac2a065 1-114
+tests/jira-write.test.mjs
+  s_0ef04e87823535::t_45356e6117f7c8 1-147
+tests/task-reminders.test.mjs
+  s_0ef04e87823535::t_dcd4cc497f900d 1-69
+worker/index.ts
+  s_0ef04e87823535::t_e381d07fd0cd04 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f5ec533264449341d876dfe8bb5ff76c3bd7e18b",
+  "prompts": {},
+  "sessions": {
+    "s_0ef04e87823535": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a13f65-b069-7f40-9cc3-e99e9f14ad94",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anit Babulal <anit.babulal@zoom.us>"
+    }
+  }
+}
