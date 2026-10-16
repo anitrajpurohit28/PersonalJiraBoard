@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>PersonalTaskBoard</AssemblyName>
+    <RootNamespace>PersonalTaskBoard.Windows</RootNamespace>
+    <ApplicationIcon>PersonalTaskBoard.ico</ApplicationIcon>
+    <Version>1.1.0</Version>
+    <Authors>Service Engineering</Authors>
+    <Description>PersonalTaskBoard native Windows launcher</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WebView2 is the supported Chromium-based Windows desktop web view. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
+  </ItemGroup>
+</Project>
