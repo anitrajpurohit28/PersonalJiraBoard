@@ -8,11 +8,16 @@ const uuid = (value) => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(val
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const retryable = (error) => error.retryable || error.status >= 500 || error.status === 429;
 const freshState = () => ({ version: 1, configId: configurationId, revision: 1, profile: null, issues: {}, createContexts: {}, editContexts: {}, details: {}, queue: [], aliases: {}, itemAliases: {}, deletedKeys: [], recentCreates: {}, requests: {}, lastSyncedAt: null });
+const workflowStatuses = (profile) => {
+  const board = profile?.metadata.columns?.flatMap((column) => column.statuses) || [];
+  return board.length ? board : profile?.metadata.statuses || [];
+};
+const workflowSignature = (profile) => JSON.stringify(workflowStatuses(profile).map(({ id, name, category }) => ({ id, name, category })));
 const operationLabels = { create: "Create task", update: "Update task", delete: "Delete task", "comment-add": "Add comment", "comment-edit": "Edit comment", "comment-delete": "Delete comment", "attachment-add": "Upload attachment", "attachment-delete": "Delete attachment", "link-add": "Link tasks", "link-delete": "Remove issue link" };
 
 export class JiraWorkspace {
   constructor({ store = workspaceStore(), now = () => new Date().toISOString() } = {}) {
-    this.store = store; this.now = now; this.state = freshState(); this.loaded = null; this.tail = Promise.resolve();
+    this.store = store; this.now = now; this.state = freshState(); this.loaded = null; this.tail = Promise.resolve(); this.editRefreshes = new Map();
   }
   async load() {
     this.loaded ||= (async () => {
@@ -127,18 +132,43 @@ export class JiraWorkspace {
   async editContext(key, client = null) {
     const resolved = this.resolve(key);
     if (client && !validLocalKey(resolved) && !this.pending(resolved).length) {
-      try {
-        const context = await client.editContext(resolved);
-        this.state.editContexts[resolved] = context; this.state.issues[resolved] = context.issue; await this.save();
-      } catch (error) { if (!retryable(error)) throw error; }
+      let refresh = this.editRefreshes.get(resolved);
+      if (!refresh) {
+        refresh = (async () => {
+          try {
+            const signature = workflowSignature(this.profile);
+            const context = await client.editContext(resolved);
+            await this.run(async () => {
+              const current = this.state.issues[resolved];
+              if (!client.active || !current || this.state.deletedKeys.includes(resolved)) return;
+              this.state.editContexts[resolved] = { ...context, workflowSignature: signature };
+              // A slow metadata response must not replace newer sync results or queued edits.
+              if (!this.pending(resolved).length && (!current.fields.updated || Date.parse(context.issue.fields.updated) >= Date.parse(current.fields.updated))) this.state.issues[resolved] = context.issue;
+              await this.save();
+            });
+          } catch (error) { if (!retryable(error)) throw error; }
+        })().finally(() => { this.editRefreshes.delete(resolved); });
+        this.editRefreshes.set(resolved, refresh);
+      }
+      await refresh;
     }
     const issue = this.viewIssue(resolved);
     if (!issue) throw jiraError("Task not found in your cached board.", 404);
     const cached = this.state.editContexts[resolved];
+    const sameStatus = cached?.issue.fields.status?.id === issue.fields.status?.id;
     const creation = this.contextForIssue(issue);
-    const columns = this.profile.metadata.columns.flatMap((column) => column.statuses);
-    const transitions = (columns.length ? columns : this.profile.metadata.statuses || []).map((status) => ({ id: `cached-${status.id}`, name: status.name, to: status, fields: [] }));
-    return { ...(cached ? copy(cached) : { fields: copy(creation?.fields || []), transitions }), issue, accountId: this.profile.identity.accountId, offline: !client, subtasks: this.children(resolved) };
+    const statuses = workflowStatuses(this.profile);
+    // A task's status can stay unchanged while its board workflow is renamed or expanded.
+    // Older per-task transitions must not briefly replace the current board's buttons.
+    const sameWorkflow = cached?.workflowSignature === workflowSignature(this.profile);
+    const transitions = cached && sameStatus && sameWorkflow ? copy(cached.transitions) : statuses.map((status) => ({ id: `cached-${status.id}`, name: status.name, to: status, fields: [] }));
+    for (const transition of transitions) {
+      const status = statuses.find((status) => status.id === transition.to.id);
+      if (status) transition.to = { ...transition.to, ...status };
+    }
+    const currentStatus = statuses.find((status) => status.id === issue.fields.status?.id);
+    if (currentStatus) issue.fields.status.name = currentStatus.name;
+    return { fields: copy(cached?.fields || creation?.fields || []), transitions, issue, accountId: this.profile.identity.accountId, offline: !client, subtasks: this.children(resolved) };
   }
   children(key) {
     const parent = this.resolve(key);
@@ -235,7 +265,14 @@ export class JiraWorkspace {
     }
     this.state.issues[key] = latest.issue; this.state.details[key] = { ...latest, cached: true };
   }
-  async refreshDetails(key, client) { this.cacheDetails(key, await client.details(key)); await this.save(); }
+  async refreshDetails(key, client) {
+    const details = await client.details(key);
+    await this.run(async () => {
+      const current = this.state.issues[key];
+      if (!client.active || !current || this.state.deletedKeys.includes(key) || Date.parse(details.issue.fields.updated) < Date.parse(current.fields.updated)) return;
+      this.cacheDetails(key, details); await this.save();
+    });
+  }
   async activity(type, key, payload) {
     if (!this.viewIssue(key)) throw jiraError("Task not found.", 404);
     const signature = createHash("sha256").update(JSON.stringify({ type, payload: Object.fromEntries(Object.entries(payload).filter(([id]) => !["key", "operationId"].includes(id))) })).digest("hex");

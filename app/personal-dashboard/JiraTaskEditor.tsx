@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState, useId, type FormEvent } from "react";
 import { settings } from "../../config/settings.mjs";
-import { adfText, jiraPriorityButtons } from "../../lib/jira-fields.mjs";
-import type { JiraField, JiraTransition, JiraSession, Task } from "../../lib/task-types";
+import { uiSettings } from "../../config/ui-settings.mjs";
+import { adfText, CORE_JIRA_FIELDS, jiraPriorityButtons } from "../../lib/jira-fields.mjs";
+import type { JiraField, JiraEditorContext, JiraSession, Task } from "../../lib/task-types";
 import { TaskModal, localDateTime } from "./TaskModal";
 import { requestJson } from "./api";
 import { JiraActivity } from "./JiraActivity";
@@ -13,15 +14,13 @@ import { useTaskAutosave } from "./useTaskAutosave";
 import { ReminderField } from "./ReminderField";
 import { JiraTaskLink, WebJiraLink } from "./JiraTaskLink";
 import type { DetailPosition } from "./useDetailPosition";
+import { orderSubtasks } from "../../lib/board-tasks";
+import { TaskTags } from "./TaskTags";
+import type { TaskTag } from "../../lib/task-tags";
+import { cachedTaskEditor } from "../../lib/jira-editor-state";
 
-type Context = {
-  projects?: Array<{ id: string; key: string; name: string }>; project?: { id: string; key: string; name: string };
-  issueTypes?: Array<{ id: string; name: string; subtask: boolean }>; issueType?: { id: string; name: string; subtask: boolean };
-  fields: JiraField[]; accountId: string; transitions?: JiraTransition[]; offline?: boolean;
-  issue?: { key: string; fields: Record<string, unknown> };
-  subtasks?: Array<{ key: string; summary: string; status: string; syncStatus: string }>;
-};
-const CORE = ["summary", "description", "priority", "duedate", "parent", "labels"];
+type Context = JiraEditorContext;
+const CORE = CORE_JIRA_FIELDS;
 const HIDDEN = ["project", "issuetype", "assignee", "reporter"];
 const idOf = (value: unknown): string => typeof value === "object" && value ? String((value as { id?: string; value?: string; accountId?: string }).id || (value as { value?: string }).value || (value as { accountId?: string }).accountId || "") : String(value ?? "");
 function initialValue(field: JiraField, raw: unknown): unknown {
@@ -57,7 +56,7 @@ export function JiraFieldInput({ field, value, onChange, accountId, disabled, cu
   if (field.allowedValues.length) {
     const multiple = field.schema.type === "array";
     const options = field.allowedValues.map((option) => typeof option === "object" ? { value: String(option.id || option.value), label: option.name || option.value || String(option.id) } : { value: option, label: option });
-    if (field.fieldId === "priority") return <ChoiceButtons label={label} {...jiraPriorityButtons(field.allowedValues, value)} disabled={disabled} onChange={onChange} />;
+    if (field.fieldId === "priority") return <ChoiceButtons label={label} order={uiSettings.priorityOrder} {...jiraPriorityButtons(field.allowedValues, value)} disabled={disabled} onChange={onChange} />;
     return <label>{label}<select multiple={multiple} required={required} disabled={disabled} value={multiple ? (Array.isArray(value) ? value.map(String) : []) : idOf(value)} onChange={(event) => onChange(multiple ? Array.from(event.target.selectedOptions).map((option) => option.value) : event.target.value)}>
       {!multiple ? <option value="">{field.hasDefaultValue ? "Jira default" : "Choose…"}</option> : null}{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
     </select></label>;
@@ -71,18 +70,21 @@ export function JiraFieldInput({ field, value, onChange, accountId, disabled, cu
   return <label>{label}<input form={formId} autoFocus={autoFocus} type={type} step={field.schema.type === "number" ? "any" : undefined} maxLength={field.fieldId === "summary" ? 255 : undefined} required={required} disabled={disabled} value={type === "datetime-local" ? localDateTime(typeof value === "string" && value ? value : null) : Array.isArray(value) ? value.join(", ") : value === undefined || value === null ? "" : String(value)} placeholder={field.fieldId === "parent" ? "e.g. KAN-2" : field.fieldId === "labels" ? "Comma-separated labels" : undefined} onInput={type === "date" ? (event) => onChange(event.currentTarget.value) : undefined} onChange={(event) => onChange(type === "datetime-local" ? event.target.value ? new Date(event.target.value).toISOString() : "" : field.fieldId === "parent" ? event.target.value.toUpperCase() : event.target.value)} /></label>;
 }
 
-export function JiraTaskEditor({ task, parentTask, tasks, busy, available, connected, serverError, onClose, onSave, onDelete, onAddSubtask, onRenameSubtask, onOpenTask, onChanged, position, onTogglePosition }: {
-  task?: Task; parentTask?: Task; tasks: Task[]; busy: boolean; available: boolean; connected: boolean; serverError: string; onClose: () => void;
+export function JiraTaskEditor({ task, parentTask, tasks, session, busy, available, connected, serverError, onClose, onSave, onDelete, onAddSubtask, onRenameSubtask, onOpenTask, onChanged, position, onTogglePosition, tags, onManageTags, tagShortcutsEnabled, taggingId, onSetTaskTag }: {
+  tags: TaskTag[]; onManageTags: () => void; tagShortcutsEnabled: boolean; taggingId: number | null; onSetTaskTag: (task: Task, id: string, assigned: boolean) => void;
+  task?: Task; parentTask?: Task; tasks: Task[]; session?: JiraSession | null; busy: boolean; available: boolean; connected: boolean; serverError: string; onClose: () => void;
   onSave: (payload: Record<string, unknown>) => Promise<boolean>; onDelete?: () => Promise<void>;
   onRenameSubtask?: (task: Task, title: string, baseSummary: string) => Promise<boolean>;
   onAddSubtask?: (parent: Task) => void; onOpenTask?: (id: number) => void; onChanged: () => Promise<void>; position: DetailPosition; onTogglePosition: () => void;
 }) {
-  const [context, setContext] = useState<Context | null>(null);
+  const [newTagIds, setNewTagIds] = useState<string[]>([]);
+  const [cached] = useState(() => cachedTaskEditor(task, session));
+  const [context, setContext] = useState<Context | null>(cached);
   const [project, setProject] = useState(task?.projectId || parentTask?.projectId || "");
   const [issueType, setIssueType] = useState(task?.issueTypeId || "");
-  const [values, setValues] = useState<Record<string, unknown>>({});
-  const initial = useRef<Record<string, unknown>>({});
-  const rawInitial = useRef<Record<string, unknown>>({});
+  const [values, setValues] = useState<Record<string, unknown>>(() => Object.fromEntries((cached?.fields || []).filter((field) => CORE.includes(field.fieldId)).map((field) => [field.fieldId, initialValue(field, cached?.issue?.fields[field.fieldId])])));
+  const initial = useRef<Record<string, unknown>>(values);
+  const rawInitial = useRef<Record<string, unknown>>(cached?.issue?.fields || {});
   const dirty = useRef(false), loadedSelection = useRef("");
   const requestId = useRef(crypto.randomUUID());
   const created = useRef(false);
@@ -125,12 +127,24 @@ export function JiraTaskEditor({ task, parentTask, tasks, busy, available, conne
             initial.current = entries; rawInitial.current = fields; setValues(entries);
           }
         }
-        setContext(next);
+        setContext(next); setLoading(false);
+        if (taskKey && connected) {
+          try {
+            const fresh = await requestJson(`${url}&refresh=1`) as Context;
+            if (cancelled) return;
+            if (!dirty.current) {
+              const fields = fresh.issue?.fields || {};
+              const entries = Object.fromEntries(fresh.fields.filter((field) => CORE.includes(field.fieldId)).map((field) => [field.fieldId, initialValue(field, fields[field.fieldId])]));
+              initial.current = entries; rawInitial.current = fields; setValues(entries);
+            }
+            setContext(fresh);
+          } catch { /* Cached edits remain available while Jira is unreachable. */ }
+        }
       } catch (error) { if (!cancelled) setLoadError(error instanceof Error ? error.message : "Unable to load cached Jira fields."); }
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [available, taskKey, project, issueType, parentKey]);
+  }, [available, connected, taskKey, project, issueType, parentKey]);
 
   useEffect(() => {
     if (!context || !children.length || childContext?.project?.id === project) return;
@@ -151,8 +165,10 @@ export function JiraTaskEditor({ task, parentTask, tasks, busy, available, conne
   const requiredTransitionFields = transition?.fields.filter((field) => !HIDDEN.includes(field.fieldId) && field.required && !field.hasDefaultValue) || [];
   const childFields = childContext?.fields.filter((field) => !HIDDEN.includes(field.fieldId) && field.fieldId !== "parent" && (["summary", "description", "priority"].includes(field.fieldId) || (field.required && !field.hasDefaultValue)))
     .sort((a, b) => (CORE.indexOf(a.fieldId) < 0 ? 100 : CORE.indexOf(a.fieldId)) - (CORE.indexOf(b.fieldId) < 0 ? 100 : CORE.indexOf(b.fieldId))) || [];
-  const subtasks = new Map((context?.subtasks || []).map((child) => [child.key, child]));
-  if (task) for (const child of tasks.filter((child) => child.parentKey === task.jiraKey)) subtasks.set(child.jiraKey, { key: child.jiraKey, summary: child.title, status: child.state || "", syncStatus: child.syncStatus });
+  const subtasks = new Map<string, NonNullable<Context["subtasks"]>[number]>();
+  if (task) for (const child of orderSubtasks(tasks.filter((child) => child.parentKey === task.jiraKey))) subtasks.set(child.jiraKey, { key: child.jiraKey, summary: child.title, status: child.state || "", syncStatus: child.syncStatus });
+  // The SQL cache resolves temporary Jira keys without changing the task ID.
+  // Mixing its rows with metadata children can briefly show the same child twice.
 
   function draft() {
     if (loading || created.current) return null;
@@ -164,7 +180,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, busy, available, conne
       .map((child) => ({ task: child, title: subtaskTitles[child.id].trim(), baseSummary: subtaskInitial.current[child.id] }));
     const saveTask = !task || Boolean(Object.keys(fieldsToSave).length || targetStatusId || Object.keys(reminderFields).length);
     if (!saveTask && !renames.length) return null;
-    const payload = task ? { fields: fieldsToSave, baseFields: rawInitial.current, expectedUpdatedAt: rawInitial.current.updated, targetStatusId, transitionFields: normalizeValues(transitionFields, transition?.fields || []) } : { requestId: requestId.current, projectId: project, issueTypeId: issueType, parentKey, fields: fieldsToSave, subtasks: children.map((child) => ({ requestId: child.requestId, fields: normalizeValues(child.fields, childContext?.fields || []) })) };
+    const payload = task ? { fields: fieldsToSave, baseFields: rawInitial.current, expectedUpdatedAt: rawInitial.current.updated, targetStatusId, transitionFields: normalizeValues(transitionFields, transition?.fields || []) } : { requestId: requestId.current, projectId: project, issueTypeId: issueType, parentKey, tagIds: newTagIds.filter((id) => tags.some((tag) => tag.id === id)), fields: fieldsToSave, subtasks: children.map((child) => ({ requestId: child.requestId, fields: normalizeValues(child.fields, childContext?.fields || []) })) };
     return { payload: { ...payload, ...reminderFields }, normalized, notifyAt, status: targetStatusId ? transition?.to : undefined, saveTask, renames };
   }
 
@@ -209,22 +225,25 @@ export function JiraTaskEditor({ task, parentTask, tasks, busy, available, conne
   const dueControl = dueField ? <section className="task-due-section" aria-label="Due date"><JiraFieldInput field={dueField} value={values.duedate} formId={formId} accountId={context?.accountId || ""} disabled={busy || loading || !available || Boolean(loadError)} onChange={(value) => { dirty.current = true; setValues((current) => ({ ...current, duedate: value })); }} /></section> : null;
   const currentStatus = context?.issue?.fields.status as { id?: string; name?: string } | undefined;
   const currentStatusId = String(currentStatus?.id || task?.jiraStatusId || "current");
+  const reminderControl = <ReminderField value={task?.archived && !target ? "" : notifyAt} onChange={setNotifyAt} fired={Boolean(task?.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} formId={formId} disabled={busy || loading || Boolean(task?.archived && !target) || transition?.to.category === "done"} />;
+  const formActions = <div className="form-actions">{task ? <span className={`save-status save-${autosave.state}`} role="status">{autosave.state === "saving" ? "Saving…" : autosave.state === "error" ? "Not saved · fix the error and retry" : autosave.state === "unsaved" ? "Unsaved changes" : "Changes saved automatically"}</span> : <button type="button" disabled={busy} onClick={onClose}>Cancel</button>}<button type="submit" form={formId} className="primary" disabled={closing || loading || (children.length > 0 && !childContext) || (!task && (!context || Boolean(loadError) || !available))}>{closing ? "Saving…" : task ? autosave.state === "error" ? "Retry save" : "Done" : parentTask ? "Create subtask" : "Create task"}</button></div>;
   return <TaskModal position={position} onTogglePosition={onTogglePosition} title={task ? `${task.jiraUrl ? task.jiraKey : "Pending task"} · Task details` : parentTask ? "New subtask" : "New task"} busy={closing || (busy && autosave.state !== "saving")} onClose={() => void leave()}>
     <form ref={form} id={formId} onSubmit={submit}>
       {serverError || loadError ? <p className="notice error" role="alert">{loadError || serverError}</p> : null}
       {validationError && autosave.state === "error" ? <p className="notice error" role="alert">{validationError}</p> : null}
-      {loading ? <p role="status">Loading task fields…</p> : null}
+      {loading && !context ? <p role="status">Loading task fields…</p> : null}
       {!connected ? <p className="offline-note">Offline changes are saved on this device and sync when Jira is available.</p> : null}
       {!task && context?.project ? <div className="form-grid">{(context.projects?.length || 0) > 1 ? <label>Project<select value={project} disabled={busy || loading} onChange={(event) => { loadedSelection.current = ""; setProject(event.target.value); setIssueType(""); setChildren([]); }}>{context.projects?.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label> : <p className="jira-context">{context.project.name}</p>}{!parentTask ? <label>Issue type<select value={issueType} disabled={busy || loading} onChange={(event) => { loadedSelection.current = ""; setIssueType(event.target.value); setChildren([]); }}>{context.issueTypes?.filter((type) => !/^epic$/i.test(type.name)).map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></label> : null}</div> : null}
       {parentTask ? <p className="jira-context">Subtask of <JiraTaskLink jiraKey={parentTask.jiraKey} onOpen={() => void leave()} /> · <strong>{parentTask.title}</strong> <WebJiraLink jiraKey={parentTask.jiraKey} href={parentTask.jiraUrl} /></p> : null}
       {task ? <p className="jira-context issue-links"><JiraTaskLink jiraKey={task.jiraKey} onOpen={() => void leave(() => onOpenTask?.(task.id))} /><span>· {task.projectKey} · {task.issueType}</span><WebJiraLink jiraKey={task.jiraKey} href={task.jiraUrl} /></p> : null}
       {!context && task ? <p><strong>{task.title}</strong></p> : null}
       <fieldset disabled={busy || loading || !available || Boolean(loadError)}>{fields.filter((field) => field.fieldId !== "duedate").map((field) => <JiraFieldInput key={field.fieldId} field={field} value={values[field.fieldId]} autoFocus={!task && field.fieldId === "summary"} accountId={context?.accountId || ""} disabled={busy || loading} onChange={(value) => { dirty.current = true; setValues((current) => ({ ...current, [field.fieldId]: value })); }} />)}
-      {task && context ? <WorkflowButtons options={[{ id: currentStatusId, name: currentStatus?.name || task.state || "Current" }, ...(context.transitions || []).map((entry) => ({ id: entry.to.id, name: entry.to.name }))]} value={target || currentStatusId} disabled={busy} onChange={(value) => { dirty.current = true; setTarget(value === currentStatusId ? "" : value); setTransitionFields({}); }} /> : null}
+      {task && context ? <WorkflowButtons options={[{ id: currentStatusId, name: currentStatus?.name || task.state || "Current" }, ...(context.transitions || []).map((entry) => ({ id: entry.to.id, name: entry.to.name }))]} value={target || currentStatusId} disabled={busy} onChange={(value) => { dirty.current = true; setTarget(value === currentStatusId ? "" : value); if (context.transitions?.find((entry) => entry.to.id === value)?.to.category === "done") setNotifyAt(""); setTransitionFields({}); }} /> : null}
       {requiredTransitionFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={transitionFields[field.fieldId]} accountId={context?.accountId || ""} disabled={busy} onChange={(value) => setTransitionFields((current) => ({ ...current, [field.fieldId]: value }))} />)}
       </fieldset>
+      <TaskTags tags={tags} selected={task ? (task.tags || []).map((tag) => tag.id) : newTagIds} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={task ? taggingId === task.id : busy} onChange={(id, assigned) => { if (task) onSetTaskTag(task, id, assigned); else if (!busy) setNewTagIds((current) => assigned ? [...new Set([...current, id])] : current.filter((item) => item !== id)); }} />
       {!task && !isSubtask && context?.issueTypes?.some((type) => type.subtask) ? <section className="subtasks-section"><h3>Subtasks</h3>{children.map((child, index) => <fieldset className="subtask-draft" key={child.requestId} disabled={busy}><div className="section-heading"><strong>Subtask {index + 1}</strong><button type="button" className="danger" onClick={() => setChildren((current) => current.filter((entry) => entry.requestId !== child.requestId))}>Remove subtask</button></div>{childFields.length ? childFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={child.fields[field.fieldId]} autoFocus={field.fieldId === "summary"} accountId={context.accountId} disabled={busy} onChange={(value) => setChildren((current) => current.map((entry) => entry.requestId === child.requestId ? { ...entry, fields: { ...entry.fields, [field.fieldId]: value } } : entry))} />) : <p role="status">Loading subtask fields…</p>}</fieldset>)}<button type="button" disabled={busy || loading} onClick={() => setChildren((current) => [...current, { requestId: crypto.randomUUID(), fields: childContext ? defaultValues(childContext.fields) : {} }])}>+ Add subtask</button></section> : null}
-      <ReminderField value={notifyAt} onChange={setNotifyAt} fired={Boolean(task?.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} disabled={busy || loading} />
+      {!task ? reminderControl : null}
 
     </form>
     {task && !isSubtask ? <section className="subtasks-section"><div className="section-heading"><h3>Subtasks ({subtasks.size})</h3><button type="button" disabled={busy || loading || !available} onClick={() => void leave(() => onAddSubtask?.(task))}>+ Add subtask</button></div>{[...subtasks.values()].map((child) => {
@@ -241,9 +260,9 @@ export function JiraTaskEditor({ task, parentTask, tasks, busy, available, conne
         </div>
       </div>;
     })}{!subtasks.size ? <p className="muted">No subtasks yet.</p> : null}</section> : null}
-    {task ? <JiraActivity task={task} tasks={tasks} onChanged={onChanged} onOpenTask={(id) => void leave(() => onOpenTask?.(id))} /> : null}
+    {task ? <JiraActivity task={task} tasks={tasks} onChanged={onChanged} onOpenTask={(id) => void leave(() => onOpenTask?.(id))} afterComments={reminderControl} beforeAttachments={formActions} /> : null}
     {!task ? dueControl : null}
-    <div className="form-actions">{task ? <span className={`save-status save-${autosave.state}`} role="status">{autosave.state === "saving" ? "Saving…" : autosave.state === "error" ? "Not saved · fix the error and retry" : autosave.state === "unsaved" ? "Unsaved changes" : "Changes saved automatically"}</span> : <button type="button" disabled={busy} onClick={onClose}>Cancel</button>}<button type="submit" form={formId} className="primary" disabled={closing || loading || (children.length > 0 && !childContext) || (!task && (!context || Boolean(loadError) || !available))}>{closing ? "Saving…" : task ? autosave.state === "error" ? "Retry save" : "Done" : parentTask ? "Create subtask" : "Create task"}</button></div>
+    {!task ? formActions : null}
     {task ? dueControl : null}
     {onDelete ? <section className="delete-task-section"><button type="button" className="danger" disabled={busy} onClick={() => void onDelete()}>Delete task</button></section> : null}
   </TaskModal>;

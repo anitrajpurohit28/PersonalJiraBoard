@@ -1,3 +1,15 @@
 {
-  "taskDetailsPosition": "right"
+  "taskDetailsPosition": "right",
+  "statusOrder": [
+    "Inbox",
+    "Now",
+    "Parked",
+    "Almost Done",
+    "Done"
+  ],
+  "priorityOrder": [
+    "Low",
+    "Medium",
+    "High"
+  ]
 }

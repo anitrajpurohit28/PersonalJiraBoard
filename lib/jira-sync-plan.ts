@@ -54,6 +54,7 @@ export function planPersonalJiraSync(issues: JiraIssue[], existingRows: Existing
     if (existing) {
       statements.push({ sql: `UPDATE tasks SET ${entries.map(([key]) => `${key} = ?`).join(", ")},
         completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, ?) ELSE NULL END,
+        ${done ? "notify_at = NULL, notify_fired = 0," : ""}
         updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND ${issue.syncRevision ? "COALESCE(jira_sync_revision, 0) <= ?" : "(jira_updated_at IS NULL OR ? IS NULL OR jira_updated_at <= ?)"}`,
         params: [...entries.map(([, value]) => value), done ? 1 : 0, syncedAt, existing.id, ...(issue.syncRevision ? [issue.syncRevision] : [values.jira_updated_at, values.jira_updated_at])] });

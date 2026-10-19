@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { fireReminderStatement, hasFiredReminder, reminderEdit, reminderKey, remindersToFire } from "../lib/task-reminders.ts";
+import { clearCompletedReminders, fireReminderStatement, hasFiredReminder, reminderEdit, reminderKey, remindersToFire } from "../lib/task-reminders.ts";
 
 function database() {
   const db = new DatabaseSync(":memory:");
@@ -66,4 +66,38 @@ test("only due, active, unfired reminders are eligible, and the same task can fi
   const next = { ...task, notifyAt: "2026-10-16T05:30:00.000Z" };
   assert.notEqual(reminderKey(task), reminderKey(next));
   assert.equal(remindersToFire([next], now).length, 1);
+});
+
+
+test("single completion clears both future and fired reminders, and late edits cannot restore them", () => {
+  for (const fired of [0, 1]) {
+    const db = database();
+    try {
+      db.prepare("UPDATE tasks SET notify_fired = ?").run(fired);
+      const change = reminderEdit(undefined, true);
+      db.prepare(`UPDATE tasks SET archived = 1, ${change.sql}`).run(...change.params);
+      edit(db, "2030-01-01"); // An overlapping autosave from another window.
+      let row = db.prepare("SELECT * FROM tasks").get();
+      assert.equal(row.notify_at, null); assert.equal(row.notify_fired, 0);
+      db.exec("UPDATE tasks SET archived = 0");
+      edit(db, undefined);
+      assert.equal(db.prepare("SELECT notify_at FROM tasks").get().notify_at, null);
+      const restore = reminderEdit("2030-01-01", false);
+      db.prepare(`UPDATE tasks SET ${restore.sql}`).run(...restore.params);
+      row = db.prepare("SELECT * FROM tasks").get();
+      assert.equal(row.notify_at, "2030-01-01"); assert.equal(row.notify_fired, 0);
+    } finally { db.close(); }
+  }
+});
+
+test("upgrade cleanup removes old completed reminders and leaves active reminders untouched", () => {
+  const db = database();
+  try {
+    db.exec("INSERT INTO tasks (id, archived, notify_at, notify_fired) VALUES (2, 1, '2030-01-01', 1), (3, 1, NULL, 1)");
+    db.exec(clearCompletedReminders); db.exec(clearCompletedReminders);
+    const rows = db.prepare("SELECT * FROM tasks ORDER BY id").all();
+    assert.equal(rows[0].notify_at, "2026-10-16T05:00:00.000Z");
+    for (const row of rows.slice(1)) { assert.equal(row.notify_at, null); assert.equal(row.notify_fired, 0); }
+    assert.equal(hasFiredReminder({ notifyAt: '2030-01-01', notifyFired: true, archived: true }), false);
+  } finally { db.close(); }
 });

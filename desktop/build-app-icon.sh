@@ -25,9 +25,8 @@ fi
 
 mkdir -p "$ICONSET_DIR" "$PROJECT_DIR/work"
 
-# Render the landscape logo as a polished rounded-square macOS icon. The small
-# AppKit helper preserves the original proportions and adds appropriate padding
-# rather than stretching the artwork with an image utility.
+# Render the supplied artwork on a transparent square canvas. Preserve its
+# proportions and colors, adding only a small margin for the macOS Dock.
 /usr/bin/swiftc \
   -swift-version 5 \
   -module-cache-path "$MODULE_CACHE_DIR" \

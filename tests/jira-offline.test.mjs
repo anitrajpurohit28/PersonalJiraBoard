@@ -339,3 +339,115 @@ test("recent card comments compare actual times across Jira timezone offsets and
   await workspace.activity('comment-add', 'KAN-1', { body: 'Newest offline comment' });
   assert.deepEqual(workspace.viewIssue('KAN-1').cachedComments.map(comment => comment.body), ['Newest offline comment', 'Jira comment in India time', 'Earlier UTC comment']);
 });
+
+
+test("opening cached task fields and activity performs no Jira requests, including after a restart", async () => {
+  const { fixture, workspace, client } = await setup();
+  await workspace.editContext("KAN-1", client);
+  const broker = connection(fixture); await broker.connect();
+  const before = fixture.calls.length;
+  const [context, activity] = await Promise.all([broker.command("edit-meta", { key: "KAN-1" }), broker.command("details", { key: "KAN-1" })]);
+  assert.equal(fixture.calls.length, before);
+  assert.equal(context.issue.fields.summary, "Task 1");
+  assert.ok(context.fields.some(field => field.fieldId === "summary"));
+  assert.ok(Array.isArray(activity.details.comments));
+  assert.ok(context.editorSchemas["10001:task"].some(field => field.fieldId === "summary"));
+  assert.ok(Object.values(context.editorSchemas).flat().every(field => ["summary", "description", "priority", "duedate", "parent", "labels"].includes(field.fieldId)));
+  assert.equal(context.offline, false);
+});
+
+test("a slow background field refresh never blocks cached reads or edits, and cannot overwrite a new draft", async () => {
+  const { fixture } = await setup();
+  const broker = connection(fixture); await broker.connect();
+  let release;
+  const started = Promise.withResolvers();
+  const blocked = new Promise(resolve => { release = resolve; });
+  fixture.state.pause = async ({ path }) => { if (path.endsWith("/editmeta")) { started.resolve(); await blocked; } };
+  const refreshing = broker.command("edit-meta", { key: "KAN-1", refresh: true });
+  await started.promise;
+  let timer;
+  try {
+    const action = Promise.all([
+      broker.command("edit-meta", { key: "KAN-1" }),
+      broker.command("update", { key: "KAN-1", fields: { summary: "Typing while Jira refreshes" } }),
+    ]);
+    const result = await Promise.race([action, new Promise(resolve => { timer = setTimeout(() => resolve(null), 500); })]);
+    assert.ok(result, "A local edit must not wait for a network metadata read");
+  } finally { clearTimeout(timer); release(); }
+  const refreshed = await refreshing;
+  assert.equal(refreshed.issue.fields.summary, "Typing while Jira refreshes");
+  assert.equal(broker.workspace.viewIssue("KAN-1").fields.summary, "Typing while Jira refreshes");
+});
+
+test("a slow activity refresh does not block local comments or replace pending edits", async () => {
+  const { fixture } = await setup();
+  const broker = connection(fixture); await broker.connect();
+  let release;
+  const started = Promise.withResolvers(), blocked = new Promise(resolve => { release = resolve; });
+  fixture.state.pause = async ({ path }) => { if (path.endsWith("/comment")) { started.resolve(); await blocked; } };
+  const refreshing = broker.command("details", { key: "KAN-1", refresh: true });
+  await started.promise;
+  let timer;
+  try {
+    const result = await Promise.race([
+      broker.command("comment-add", { key: "KAN-1", body: "Comment saved while refreshing", operationId: randomUUID() }),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 500); }),
+    ]);
+    assert.ok(result, "Adding a local comment must not wait for live activity");
+  } finally { clearTimeout(timer); release(); }
+  const result = await refreshing;
+  assert.ok(result.details.comments.some(comment => adfText(comment.body).includes("Comment saved while refreshing")));
+});
+
+
+test("legacy task metadata follows the current board workflow before any Jira refresh", async () => {
+  const { fixture, workspace, client } = await setup();
+  const oldContext = await workspace.editContext("KAN-1", client);
+  delete workspace.state.editContexts["KAN-1"].workflowSignature; // Existing installations have no workflow version.
+  const statuses = [
+    { id: "10", name: "Inbox", category: "new" },
+    { id: "40", name: "Now", category: "new" },
+    { id: "20", name: "Parked", category: "indeterminate" },
+    { id: "25", name: "Almost Done", category: "indeterminate" },
+    { id: "30", name: "Done", category: "done" },
+  ];
+  client.metadata.columns = statuses.map((status) => ({ id: `column-${status.id}`, name: status.name, done: status.category === "done", statuses: [status] }));
+  await workspace.run(() => workspace.prime(client));
+  const restarted = fixture.makeWorkspace(); await restarted.load();
+  const before = fixture.calls.length;
+  const cached = await restarted.editContext("KAN-1");
+  assert.equal(fixture.calls.length, before, "Showing current workflow buttons must not wait for Jira");
+  assert.deepEqual(cached.transitions.map((transition) => transition.to), statuses);
+  assert.equal(cached.issue.fields.status.id, "20");
+  assert.equal(cached.issue.fields.status.name, "Parked");
+  assert.deepEqual(cached.fields, oldContext.fields);
+  assert.equal(restarted.state.editContexts["KAN-1"].transitions[1].to.name, "In Progress", "Reading must not mutate the saved context");
+  const readContext = client.editContext.bind(client);
+  client.editContext = async (key) => ({ ...await readContext(key), transitions: statuses.map((status) => ({ id: `live-${status.id}`, name: status.name, to: status, fields: [] })) });
+  const fresh = await restarted.editContext("KAN-1", client);
+  assert.deepEqual(fresh.transitions.map((transition) => transition.to), cached.transitions.map((transition) => transition.to));
+});
+
+test("workflow changes invalidate cached transitions while fresh permissions and required fields survive restart", async () => {
+  const { fixture, workspace, client } = await setup();
+  await workspace.editContext("KAN-1", client);
+  client.metadata.columns[1].statuses[0].name = "Parked";
+  await workspace.run(() => workspace.prime(client));
+  const before = fixture.calls.length;
+  const cached = await workspace.editContext("KAN-1");
+  assert.equal(fixture.calls.length, before);
+  assert.equal(cached.transitions[1].to.name, "Parked");
+  const readContext = client.editContext.bind(client);
+  const required = { fieldId: "resolution", name: "Resolution", required: true, hasDefaultValue: false, schema: { type: "string" }, allowedValues: [] };
+  client.editContext = async (key) => {
+    const context = await readContext(key);
+    return { ...context, transitions: context.transitions.filter((transition) => transition.to.id === "30").map((transition) => ({ ...transition, fields: [required] })) };
+  };
+  const fresh = await workspace.editContext("KAN-1", client);
+  assert.equal(fresh.transitions.length, 1, "Fresh Jira permissions must not be broadened to every board status");
+  const restarted = fixture.makeWorkspace(); await restarted.load();
+  const offline = await restarted.editContext("KAN-1");
+  assert.deepEqual(offline.transitions, fresh.transitions);
+  assert.equal(offline.transitions[0].id, "to-30");
+  assert.deepEqual(offline.transitions[0].fields, [required]);
+});

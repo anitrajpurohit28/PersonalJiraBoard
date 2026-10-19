@@ -47,7 +47,7 @@ export function bulkTaskStatements(action: BulkTaskAction, ids: number[], comple
   }
   return [{
     sql: `UPDATE tasks SET
-      status = 'done', archived = 1,
+      status = 'done', archived = 1, notify_at = NULL, notify_fired = 0,
       completed_at = CASE WHEN archived = 1 AND completed_at IS NOT NULL
         THEN completed_at ELSE ? END,
       manual_order = CASE WHEN status = 'done' THEN manual_order ELSE NULL END,

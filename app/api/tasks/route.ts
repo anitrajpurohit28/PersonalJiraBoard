@@ -3,6 +3,8 @@ import { requestJiraHelper } from "../../../lib/jira-helper";
 import { reminderEdit } from "../../../lib/task-reminders";
 import { cacheJiraResult } from "../../../lib/jira-result";
 import { assertLocalMutation, errorResponse } from "../../../lib/local-request";
+import { parseTagIds, taskTagAssignment, tagOrderClause, type TaskTag } from "../../../lib/task-tags";
+import { listTags } from "../../../db/tags";
 import { validLocalKey } from "../../../lib/jira-fields.mjs";
 
 type TaskRow = {
@@ -11,7 +13,7 @@ type TaskRow = {
   notes: string; notify_at: string | null; notify_fired: number; manual_order: number | null;
   jira_status_id: string | null; jira_description: string | null; jira_priority_id: string | null; jira_assignee_id: string | null;
   jira_project_id: string | null; jira_project_key: string | null; jira_issue_type_id: string | null; jira_issue_type: string | null;
-  jira_parent_key: string | null; jira_due_date: string | null; jira_labels: string | null; jira_updated_at: string | null;
+  jira_parent_key: string | null; jira_due_date: string | null; jira_labels: string | null; jira_created_at: string | null; jira_updated_at: string | null;
   jira_sync_status: string | null; jira_sync_error: string | null; jira_is_subtask: number;
   jira_comments: string | null;
   archived: number; completed_at: string | null; created_at: string; updated_at: string;
@@ -21,9 +23,10 @@ export async function GET(request: Request) {
   try {
     const d1 = await ensureTaskSchema();
     const archived = new URL(request.url).searchParams.get("view") === "done" ? 1 : 0;
-    const [tasks, updates] = await Promise.all([
+    const [tasks, updates, tags] = await Promise.all([
       d1.prepare("SELECT * FROM tasks WHERE archived = ? AND (source = 'manual' OR jira_query_active = 1) ORDER BY manual_order IS NULL, manual_order, priority, id DESC").bind(archived).all<TaskRow>(),
       d1.prepare("SELECT task_updates.* FROM task_updates INNER JOIN tasks ON tasks.id = task_updates.task_id WHERE tasks.archived = ? ORDER BY task_updates.created_at DESC, task_updates.id DESC").bind(archived).all<{ id: number; task_id: number; body: string; created_at: string }>(),
+      d1.prepare(`SELECT tags.id, tags.name, tags.shortcut, assigned.task_id FROM personal_tags AS tags JOIN personal_task_tags AS assigned ON assigned.tag_id = tags.id JOIN tasks ON tasks.id = assigned.task_id WHERE tasks.archived = ? ORDER BY ${tagOrderClause("tags")}`).bind(archived).all<TaskTag & { task_id: number }>(),
     ]);
     return Response.json({ tasks: (tasks.results ?? []).map((row) => ({
       id: row.id, jiraKey: row.jira_key, jiraUrl: row.jira_url, title: row.title, priority: row.priority,
@@ -35,9 +38,10 @@ export async function GET(request: Request) {
       dueDate: row.jira_due_date, labels: JSON.parse(row.jira_labels || "[]"), jiraUpdatedAt: row.jira_updated_at,
       syncStatus: row.jira_sync_status || "synced", syncError: row.jira_sync_error || "",
       isSubtask: Boolean(row.jira_is_subtask),
+      tags: tags.results.filter((tag) => tag.task_id === row.id).map(({ id, name, shortcut }) => ({ id, name, shortcut })),
       comments: JSON.parse(row.jira_comments || "[]"),
       manualOrder: row.manual_order, archived: Boolean(row.archived), completedAt: row.completed_at,
-      createdAt: row.created_at, updatedAt: row.updated_at,
+      createdAt: row.created_at, jiraCreatedAt: row.jira_created_at, updatedAt: row.updated_at,
       updates: (updates.results ?? []).filter((update) => update.task_id === row.id).map((update) => ({ id: update.id, body: update.body, createdAt: update.created_at })),
     })) });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to load tasks." }, { status: 500 }); }
@@ -48,6 +52,9 @@ export async function POST(request: Request) {
     assertLocalMutation(request);
     const payload = await request.json();
     const d1 = await ensureTaskSchema();
+    const tagIds = parseTagIds(payload.tagIds || []);
+    const knownTags = await listTags(d1);
+    if (tagIds.some((id) => !knownTags.some((tag) => tag.id === id))) return Response.json({ error: "A selected tag no longer exists." }, { status: 400 });
     const result = await requestJiraHelper("create", "POST", { requestId: payload.requestId, projectId: payload.projectId, issueTypeId: payload.issueTypeId, fields: payload.fields, parentKey: payload.parentKey, subtasks: payload.subtasks });
     let warning = typeof result.warning === "string" ? result.warning : "";
     let id: number | undefined;
@@ -58,6 +65,7 @@ export async function POST(request: Request) {
       const assignments = [...(payload.notes === undefined ? [] : ["notes = ?"]), ...(reminder.sql ? [reminder.sql] : [])];
       if (id && assignments.length) await d1.prepare(`UPDATE tasks SET ${assignments.join(", ")} WHERE id = ?`)
         .bind(...(payload.notes === undefined ? [] : [cleanText(payload.notes, 8000)]), ...reminder.params, id).run();
+      if (id && tagIds.length) await d1.batch(tagIds.map((tagId) => { const change = taskTagAssignment(id!, tagId, true); return d1.prepare(change.sql).bind(...change.params); }));
     } catch {
       warning = `${warning} The task is saved in the sync queue, but its local details could not be cached. Refresh before submitting again.`.trim();
     }

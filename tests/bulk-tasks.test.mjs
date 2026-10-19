@@ -40,7 +40,7 @@ test("bulk requests reject invalid actions, empty selections and malformed IDs",
   assert.deepEqual(parseBulkTaskRequest({ action: "delete", ids: [1, 2, 1] }), { action: "delete", ids: [1, 2] });
 });
 
-test("bulk completion archives selected entries while preserving reminders and notes", () => {
+test("bulk completion clears selected reminders while preserving notes and unselected tasks", () => {
   const db = fixture();
   try {
     execute(db, "done", [1, 2]);
@@ -48,13 +48,14 @@ test("bulk completion archives selected entries while preserving reminders and n
     for (const row of rows.slice(0, 2)) {
       assert.equal(row.status, "done");
       assert.equal(row.archived, 1);
-      assert.equal(row.notify_at, "2030-01-01");
-      assert.equal(row.notify_fired, 1);
+      assert.equal(row.notify_at, null);
+      assert.equal(row.notify_fired, 0);
       assert.equal(row.manual_order, null);
       assert.equal(row.completed_at, "2026-10-15T12:00:00.000Z");
       assert.equal(row.notes, "Keep notes");
     }
     assert.equal(rows[2].status, "waiting");
+    assert.equal(rows[2].notify_at, "2030-01-01"); assert.equal(rows[2].notify_fired, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM task_updates").get().count, 3);
     db.prepare("UPDATE tasks SET completed_at = '2026-10-01' WHERE id = 1").run();
     execute(db, "done", [1]);

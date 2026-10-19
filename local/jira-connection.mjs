@@ -2,7 +2,7 @@ import { configurationId, configuredBoardId, helperProtocolVersion, settings } f
 import { JiraApi } from "./jira-api.mjs";
 import { JiraWorkspace } from "./jira-workspace.mjs";
 import { loadApiToken, saveApiToken, validateApiToken } from "./jira-credentials.mjs";
-import { jiraError } from "../lib/jira-fields.mjs";
+import { CORE_JIRA_FIELDS, jiraError } from "../lib/jira-fields.mjs";
 
 export class JiraConnection {
   constructor({ loadToken = loadApiToken, saveToken = saveApiToken, createClient = (token) => new JiraApi(token), workspace = new JiraWorkspace(), autoSync = true } = {}) {
@@ -22,6 +22,7 @@ export class JiraConnection {
       accountDisplayName: profile?.identity.displayName || null,
       baseUrl: profile?.baseUrl || this.client?.baseUrl || null, cloudId: profile?.cloudId || this.client?.cloudId || null,
       boardId: configuredBoardId, metadata: profile?.metadata || null,
+      editorSchemas: Object.fromEntries(Object.entries(this.workspace.state.createContexts).map(([key, context]) => [key, context.fields.filter((field) => CORE_JIRA_FIELDS.includes(field.fieldId))])),
       hasCredential: this.hasCredential, credentialSource: this.credentialSource, queue: this.workspace.queueSummary(),
     };
   }
@@ -105,10 +106,15 @@ export class JiraConnection {
     const client = this.phase === "connected" && !this.paused ? this.client : null;
     let result;
     if (action === "issues") { if (payload.refresh === true) this.kick(); result = this.workspace.snapshot(); }
+    else if (action === "edit-meta") {
+      // Cached reads never wait for Jira or hold the local mutation queue.
+      result = { ...await this.workspace.editContext(payload.key, payload.refresh === true ? client : null), offline: !client };
+    }
+    else if (action === "details") {
+      result = { details: await this.workspace.details(payload.key, payload.refresh === true ? client : null) };
+    }
     else result = await this.workspace.run(async () => {
       if (action === "create-meta") return this.workspace.createContext(payload, client);
-      if (action === "edit-meta") return this.workspace.editContext(payload.key, client);
-      if (action === "details") return { details: await this.workspace.details(payload.key, client) };
       if (action === "create") return this.workspace.create(payload, client);
       if (action === "update") return this.workspace.update(payload.key, payload);
       if (action === "delete") {

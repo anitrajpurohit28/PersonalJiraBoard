@@ -1,4 +1,5 @@
 import { ensureTaskSchema } from "./tasks";
+import { taskTagAliasStatements } from "../lib/task-tags";
 import { planPersonalJiraSync, type JiraIssue, type JiraSyncScope, type SyncOptions } from "../lib/jira-sync-plan";
 import { jiraCacheChanges, resolveCachedJiraIssues } from "../lib/jira-cache-changes.mjs";
 export type { JiraIssue };
@@ -6,7 +7,7 @@ export type { JiraIssue };
 export async function mergePersonalJiraIssues(issues: JiraIssue[], baseUrl: string, accountId: string, scope: JiraSyncScope = { kind: "personal" }, options: SyncOptions = {}) {
   const d1 = await ensureTaskSchema();
   const changes = jiraCacheChanges(options.aliases, options.deletedKeys);
-  if (changes.length) await d1.batch(changes.map(({ sql, params }) => d1.prepare(sql).bind(...params)));
+  if (changes.length) await d1.batch([...Object.entries(options.aliases || {}).flatMap(([local, remote]) => taskTagAliasStatements(local, remote)), ...changes].map(({ sql, params }) => d1.prepare(sql).bind(...params)));
   const [removed, aliases] = await Promise.all([
     d1.prepare("SELECT jira_key FROM jira_deleted_tasks").all<{ jira_key: string }>(),
     d1.prepare("SELECT local_key, jira_key FROM jira_task_aliases").all<{ local_key: string; jira_key: string }>(),

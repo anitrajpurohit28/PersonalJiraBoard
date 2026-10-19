@@ -21,8 +21,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       const result = await d1.prepare(statement.sql).bind(...statement.params).run();
       return Response.json({ ok: true, fired: Boolean(result.meta.changes) });
     }
-    const reminder = reminderEdit(payload.notifyAt === undefined ? undefined : cleanNotifyAt(payload.notifyAt));
-    const reminderSql = reminder.sql ? `, ${reminder.sql}` : "";
+    let reminder = reminderEdit(payload.notifyAt === undefined ? undefined : cleanNotifyAt(payload.notifyAt));
+    let reminderSql = reminder.sql ? `, ${reminder.sql}` : "";
     let warning = "";
     if (current.source === "jira") {
       const action = payload.action || (payload.status === "done" ? "done" : payload.status === "now" ? "restore" : undefined);
@@ -40,6 +40,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       if (!title) return Response.json({ error: "Title is required." }, { status: 400 });
       const status = isWorkflowStatus(payload.status) ? payload.status : current.status;
       const done = status === "done";
+      reminder = reminderEdit(done ? null : payload.notifyAt === undefined ? undefined : cleanNotifyAt(payload.notifyAt), done);
+      reminderSql = reminder.sql ? `, ${reminder.sql}` : "";
       await d1.prepare(`UPDATE tasks SET title = ?, priority = ?, status = ?, notes = ?${reminderSql}, archived = ?,
         completed_at = ?, manual_order = CASE WHEN status = ? THEN manual_order ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(
         title, payload.priority === undefined ? current.priority : cleanPriority(payload.priority), status,

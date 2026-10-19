@@ -132,7 +132,7 @@ function database() {
     id INTEGER PRIMARY KEY, jira_key TEXT UNIQUE, jira_url TEXT, title TEXT, priority INTEGER, status TEXT,
     source TEXT DEFAULT 'manual', jira_status TEXT, jira_status_category TEXT, jira_priority TEXT,
     jira_assignee TEXT, jira_reporter TEXT, jira_created_at TEXT, jira_updated_at TEXT, jira_synced_at TEXT,
-    jira_query_active INTEGER DEFAULT 1, archived INTEGER DEFAULT 0, completed_at TEXT,
+    jira_query_active INTEGER DEFAULT 1, archived INTEGER DEFAULT 0, completed_at TEXT, manual_order INTEGER,
     notes TEXT DEFAULT '', notify_at TEXT, notify_fired INTEGER DEFAULT 0, updated_at TEXT,
     jira_status_id TEXT, jira_description TEXT, jira_priority_id TEXT, jira_assignee_id TEXT,
     jira_project_id TEXT, jira_project_key TEXT, jira_issue_type_id TEXT, jira_issue_type TEXT,
@@ -146,21 +146,23 @@ function plan(db, issues, options = {}) {
   return planPersonalJiraSync(issues, db.prepare("SELECT * FROM tasks WHERE source = 'jira'").all(), configuredSite, accountId, "2026-10-15T12:00:00Z", { kind: "board", boardId: "2" }, options);
 }
 
-test("Jira status changes and completion preserve private notes and fired reminders", () => {
+test("Jira edits preserve reminders until completion clears them permanently, including after reopening", () => {
   const db = database();
   try {
     apply(db, plan(db, [issue(), issue("KAN-2")]));
-    db.exec("UPDATE tasks SET notes = 'Keep private', notify_at = '2030-01-01', notify_fired = 1, status = 'later' WHERE jira_key = 'KAN-1'");
+    db.exec("UPDATE tasks SET notes = 'Keep private', notify_at = '2030-01-01', manual_order = 7, notify_fired = 1, status = 'later' WHERE jira_key = 'KAN-1'");
     const changed = issue(); changed.fields.summary = "Changed in Jira";
     apply(db, plan(db, [changed, issue("KAN-2")]));
     let row = db.prepare("SELECT * FROM tasks WHERE jira_key = 'KAN-1'").get();
     assert.equal(row.title, "Changed in Jira"); assert.equal(row.notes, "Keep private");
     assert.equal(row.jira_status_id, "20"); assert.equal(row.status, "now");
+    assert.equal(row.notify_at, "2030-01-01"); assert.equal(row.notify_fired, 1);
     apply(db, plan(db, [issue("KAN-1", "done"), issue("KAN-2")]));
     row = db.prepare("SELECT * FROM tasks WHERE jira_key = 'KAN-1'").get();
-    assert.equal(row.archived, 1); assert.equal(row.notify_at, "2030-01-01"); assert.equal(row.notify_fired, 1);
+    assert.equal(row.archived, 1); assert.equal(row.notify_at, null); assert.equal(row.notify_fired, 0); assert.equal(row.notes, "Keep private");
     apply(db, plan(db, [issue(), issue("KAN-2")]));
     assert.equal(db.prepare("SELECT archived FROM tasks WHERE jira_key = 'KAN-1'").get().archived, 0);
+    assert.equal(db.prepare("SELECT notify_at FROM tasks WHERE jira_key = 'KAN-1'").get().notify_at, null);
   } finally { db.close(); }
 });
 
@@ -243,7 +245,7 @@ test("an in-flight local-key response cannot recreate a duplicate after Jira ass
     db.exec("CREATE TABLE task_updates (task_id INTEGER, body TEXT)");
     const pending = { ...issue(), key: local, syncRevision: 5 };
     apply(db, plan(db, [pending], { revision: 5 }));
-    db.exec("UPDATE tasks SET notes = 'Keep private', notify_at = '2030-01-01'");
+    db.exec("UPDATE tasks SET notes = 'Keep private', notify_at = '2030-01-01', manual_order = 7");
     const id = db.prepare("SELECT id FROM tasks").get().id;
     for (const statement of jiraCacheChanges({ [local]: "KAN-10" })) db.prepare(statement.sql).run(...statement.params);
     apply(db, plan(db, [{ ...issue(), key: "KAN-10", syncRevision: 6 }], { revision: 6 }));
@@ -251,7 +253,7 @@ test("an in-flight local-key response cannot recreate a duplicate after Jira ass
     apply(db, plan(db, resolveCachedJiraIssues([pending], aliases, []), { revision: 5 }));
     const rows = db.prepare("SELECT * FROM tasks").all();
     assert.equal(rows.length, 1); assert.equal(rows[0].id, id); assert.equal(rows[0].jira_key, "KAN-10");
-    assert.equal(rows[0].notes, "Keep private"); assert.equal(rows[0].notify_at, "2030-01-01"); assert.equal(rows[0].jira_sync_revision, 6);
+    assert.equal(rows[0].notes, "Keep private"); assert.equal(rows[0].notify_at, "2030-01-01"); assert.equal(rows[0].jira_sync_revision, 6); assert.equal(rows[0].manual_order, 7);
     assert.equal(resolveCachedJiraIssues([pending], aliases, ["KAN-10"]).length, 0);
     const staleInsert = planPersonalJiraSync([pending], [], configuredSite, accountId, undefined, { kind: "board", boardId: "2" });
     apply(db, staleInsert);
@@ -259,5 +261,40 @@ test("an in-flight local-key response cannot recreate a duplicate after Jira ass
     for (const statement of jiraCacheChanges({}, ["KAN-10"])) db.prepare(statement.sql).run(...statement.params);
     apply(db, planPersonalJiraSync([{ ...issue(), key: "KAN-10" }], [], configuredSite, accountId, undefined, { kind: "board", boardId: "2" }));
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM tasks").get().count, 0);
+  } finally { db.close(); }
+});
+
+
+test("offline Done clears the cached reminder before reconnecting, and replay does not resurrect it", async () => {
+  const fixture = jiraFixture(), workspace = fixture.makeWorkspace(), db = database();
+  try {
+    await workspace.load();
+    const client = await fixture.makeClient().initialise();
+    await workspace.run(() => workspace.prime(client));
+    await workspace.synchronize(client);
+    apply(db, plan(db, workspace.snapshot().issues));
+    db.exec("UPDATE tasks SET notify_at = '2026-10-16T05:00:00Z', notify_fired = 1 WHERE jira_key = 'KAN-1'");
+    await workspace.update("KAN-1", { action: "done" });
+    const pending = workspace.snapshot();
+    apply(db, plan(db, pending.issues, { revision: pending.revision }));
+    let row = db.prepare("SELECT * FROM tasks WHERE jira_key = 'KAN-1'").get();
+    assert.equal(row.archived, 1); assert.equal(row.notify_at, null); assert.equal(row.notify_fired, 0);
+    assert.notEqual(fixture.issues.get("KAN-1").fields.status.statusCategory.key, "done");
+    await workspace.synchronize(client);
+    apply(db, plan(db, workspace.snapshot().issues));
+    row = db.prepare("SELECT * FROM tasks WHERE jira_key = 'KAN-1'").get();
+    assert.equal(row.archived, 1); assert.equal(row.notify_at, null); assert.equal(row.notify_fired, 0);
+    assert.equal(fixture.issues.get("KAN-1").fields.status.statusCategory.key, "done");
+  } finally { db.close(); }
+});
+
+test("a stale Done snapshot cannot clear a reminder rescheduled after a newer active Jira revision", () => {
+  const db = database();
+  try {
+    apply(db, plan(db, [{ ...issue(), syncRevision: 10 }]));
+    db.exec("UPDATE tasks SET notify_at = '2030-01-01', manual_order = 9");
+    apply(db, plan(db, [{ ...issue('KAN-1', 'done'), syncRevision: 9 }]));
+    const row = db.prepare("SELECT * FROM tasks").get();
+    assert.equal(row.archived, 0); assert.equal(row.notify_at, "2030-01-01"); assert.equal(row.manual_order, 9);
   } finally { db.close(); }
 });

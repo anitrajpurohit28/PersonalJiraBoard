@@ -1,4 +1,6 @@
 import { getD1 } from "./index";
+import { personalTagSchema, tagOrderMigration } from "../lib/task-tags";
+import { clearCompletedReminders } from "../lib/task-reminders";
 import { jiraDateMigrations } from "../lib/jira-fields.mjs";
 
 export type WorkflowStatus = "now" | "waiting" | "later" | "confirmation" | "done";
@@ -26,7 +28,13 @@ export async function ensureTaskSchema() {
     d1.prepare("CREATE TABLE IF NOT EXISTS task_migrations (name TEXT PRIMARY KEY)"),
     d1.prepare("CREATE TABLE IF NOT EXISTS jira_task_aliases (local_key TEXT PRIMARY KEY, jira_key TEXT NOT NULL)"),
     d1.prepare("CREATE TABLE IF NOT EXISTS jira_deleted_tasks (jira_key TEXT PRIMARY KEY)"),
+    ...personalTagSchema.map((sql) => d1.prepare(sql)),
   ]);
+  const tagColumns = await d1.prepare("PRAGMA table_info(personal_tags)").all<{ name: string }>();
+  if (!tagColumns.results.some((column) => column.name === "sort_order")) {
+    try { await d1.prepare(tagOrderMigration).run(); }
+    catch (error) { if (!String(error).includes("duplicate column")) throw error; }
+  }
   const result = await d1.prepare("PRAGMA table_info(tasks)").all<{ name: string }>();
   const columns = new Set((result.results ?? []).map((column) => column.name));
   for (const name of ["jira_status_category", "jira_status_id", "jira_description", "jira_priority_id", "jira_assignee_id", "jira_project_id", "jira_project_key", "jira_issue_type_id", "jira_issue_type", "jira_parent_key", "jira_due_date", "jira_labels", "jira_pending_until", "jira_sync_status", "jira_sync_error", "jira_sync_revision", "jira_is_subtask", "jira_comments"]) {
@@ -43,6 +51,12 @@ export async function ensureTaskSchema() {
     await d1.batch([
       ...changes.map((row: { id: number; previous: string | null; updatedAt: string | null; createdAt: string | null }) => d1.prepare("UPDATE tasks SET jira_updated_at = ?, jira_created_at = ? WHERE id = ? AND jira_updated_at IS ?").bind(row.updatedAt, row.createdAt, row.id, row.previous)),
       d1.prepare("INSERT OR IGNORE INTO task_migrations (name) VALUES ('jira-timestamps-v1')"),
+    ]);
+  }
+  if (!await d1.prepare("SELECT name FROM task_migrations WHERE name = 'completed-reminders-v1'").first()) {
+    await d1.batch([
+      d1.prepare(clearCompletedReminders),
+      d1.prepare("INSERT OR IGNORE INTO task_migrations (name) VALUES ('completed-reminders-v1')"),
     ]);
   }
   return d1;

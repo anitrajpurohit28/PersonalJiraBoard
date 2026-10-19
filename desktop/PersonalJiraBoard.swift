@@ -57,10 +57,30 @@ private let jiraHelperHealthURL = URL(string: "http://\(jiraHelperHost):\(jiraHe
 private let expectedBoardProtocolVersion = runtimeSettings.appProtocolVersion
 private let expectedJiraHelperProtocolVersion = runtimeSettings.helperProtocolVersion
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
+// Native key equivalents run before WebKit or window commands. Only the
+// shortcuts advertised by the open task are intercepted, including Cmd-W.
+private final class TagShortcutWebView: WKWebView {
+    var tagShortcutKeys = Set<String>()
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if event.type == .keyDown, modifiers == .command,
+           let key = event.charactersIgnoringModifiers?.lowercased(), tagShortcutKeys.contains(key) {
+            if !event.isARepeat,
+               let encoded = try? JSONSerialization.data(withJSONObject: key, options: [.fragmentsAllowed]),
+               let json = String(data: encoded, encoding: .utf8) {
+                evaluateJavaScript("window.dispatchEvent(new CustomEvent('task-board-tag-shortcut', {detail: \(json)}))", completionHandler: nil)
+            }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     // The WebKit view is the app's visible, browser-free board window.
     private var window: NSWindow!
-    private var webView: WKWebView!
+    private var webView: TagShortcutWebView!
 
     // Only processes started by this app are stopped when the window closes.
     // Desktop never reuses or launches the browser `npm run dev` workflow.
@@ -211,7 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         // handled below so Jira links open in the user's normal browser.
         let configuration = WKWebViewConfiguration()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        configuration.userContentController.add(self, name: "taskTagShortcuts")
+        webView = TagShortcutWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
@@ -227,6 +248,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window.center()
         window.setFrameAutosaveName("PersonalJiraBoardWindow")
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "taskTagShortcuts", message.frameInfo.isMainFrame,
+              let origin = message.webView?.url, origin.scheme == "http",
+              origin.host == "localhost", origin.port == desktopBoardPort,
+              let keys = message.body as? [String] else { return }
+        let reserved: Set<String> = ["a", "c", "q", "v", "x", "z"]
+        webView.tagShortcutKeys = Set(keys.filter {
+            $0.range(of: "^[a-z0-9=-]$", options: .regularExpression) != nil && !reserved.contains($0)
+        })
     }
 
     private func showStartingPage(message: String = "Starting Personal Jira Board…") {

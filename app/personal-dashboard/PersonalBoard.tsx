@@ -2,18 +2,25 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { settings, storageNamespace } from "../../config/settings.mjs";
+import { orderNamedOptions, uiSettings } from "../../config/ui-settings.mjs";
 import { COLUMNS, PRIORITY_OPTIONS, type Priority, type Status, type Task, type JiraSession } from "../../lib/task-types";
 import { JiraConnection, JiraTaskEditor } from "./JiraTaskEditor";
 import { TaskModal as Modal, localDateTime } from "./TaskModal";
 import { requestJson } from "./api";
 import { SyncQueuePanel } from "./SyncQueuePanel";
 import { TaskGroupCard } from "./TaskGroupCard";
-import { groupBoardTasks, filterTaskGroups, type TaskGroup } from "../../lib/board-tasks";
+import { groupBoardTasks, filterTaskGroups, sortTaskGroups, orderSubtasks, isTaskOverdue, type BoardFilters, type TaskGroup } from "../../lib/board-tasks";
 import { useDetailPosition, type DetailPosition } from "./useDetailPosition";
+import { useBoardSort } from "./useBoardSort";
+import { useCollapsedSubtasks } from "./useCollapsedSubtasks";
+import { moveTaskBefore } from "../../lib/task-order";
 import { WorkflowButtons } from "./WorkflowButtons";
 import { ChoiceButtons } from "./ChoiceButtons";
 import { useTaskAutosave } from "./useTaskAutosave";
 import { ReminderField } from "./ReminderField";
+import { TaskTags } from "./TaskTags";
+import { TagManager } from "./TagManager";
+import type { TaskTag } from "../../lib/task-tags";
 import { reminderKey, remindersToFire } from "../../lib/task-reminders";
 
 type Changes = { title: string; priority: Priority; status: Status; notifyAt: string | null };
@@ -27,15 +34,21 @@ export default function PersonalBoard() {
   const [detailPosition, toggleDetailPosition] = useDetailPosition();
   const searchInput = useRef<HTMLInputElement>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [tags, setTags] = useState<TaskTag[]>([]);
+  const [showTags, setShowTags] = useState(false);
+  const [tagId, setTagId] = useState("");
+  const [taggingId, setTaggingId] = useState<number | null>(null);
+  const tagWrites = useRef<Promise<void>>(Promise.resolve());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const mutationInFlight = useRef(false);
   const [syncing, setSyncing] = useState(false);
-  const [view, setView] = useState<"active" | "done" | "reminders">("active");
+  const [view, setView] = useState<BoardFilters["view"]>("active");
   const [source, setSource] = useState<"all" | "jira" | "manual">("all");
   const [query, setQuery] = useState("");
   const [priority, setPriority] = useState("all");
-  const [sort, setSort] = useState("priority");
+  const [sort, setSort] = useBoardSort();
+  const [collapsedSubtasks, setSubtasksCollapsed] = useCollapsedSubtasks();
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -58,7 +71,7 @@ export default function PersonalBoard() {
 
   useEffect(() => {
     let cancelled = false;
-    void fetchTasks().then((next) => { if (!cancelled) setTasks(next); })
+    void Promise.all([fetchTasks(), requestJson("/api/tags")]).then(([next, catalog]) => { if (!cancelled) { setTasks(next); setTags(catalog.tags); } })
       .catch((error) => { if (!cancelled) setError(error.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -137,20 +150,19 @@ export default function PersonalBoard() {
     window.addEventListener("keydown", focusSearch); return () => window.removeEventListener("keydown", focusSearch);
   }, []);
   const displayTask = (group: TaskGroup) => group.parent || group.matches[0];
-  const groups = filterTaskGroups(groupBoardTasks(tasks), { view, source, priority, state: "all", query }).sort((a, b) => {
-    const left = displayTask(a), right = displayTask(b);
-    if (view === "reminders") return Math.min(...a.matches.map((task) => Date.parse(task.notifyAt!))) - Math.min(...b.matches.map((task) => Date.parse(task.notifyAt!)));
-    if (sort === "oldest") return left.createdAt.localeCompare(right.createdAt);
-    return left.priority - right.priority || right.id - left.id;
-  });
+  const groups = sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view, source, priority, state: "all", query, tagId }), sort);
+  const collapseKey = (group: TaskGroup) => group.parent ? String(group.parent.id) : group.key;
+  const collapsibleGroups = groups.filter((group) => group.children.length);
+  const allSubtasksCollapsed = collapsibleGroups.length > 0 && collapsibleGroups.every((group) => collapsedSubtasks.has(collapseKey(group)));
   const visible = groups.flatMap((group) => group.matches);
   const checkedVisible = visible.filter((task) => checked.has(task.id));
   if (checkedVisible.length !== checked.size) setChecked(new Set(checkedVisible.map((task) => task.id)));
   const allChecked = visible.length > 0 && checkedVisible.length === visible.length;
   useEffect(() => { if (selectAll.current) selectAll.current.indeterminate = checkedVisible.length > 0 && !allChecked; }, [checkedVisible.length, allChecked]);
   const selected = tasks.find((task) => task.id === selectedId);
-  const reminderCount = tasks.filter((task) => task.notifyAt).length;
-  function resetFilters() { setQuery(""); setPriority("all"); setSource("all"); setSort("priority"); }
+  const reminderCount = tasks.filter((task) => !task.archived && task.notifyAt).length;
+  const overdueCount = tasks.filter((task) => isTaskOverdue(task)).length;
+  function resetFilters() { setQuery(""); setPriority("all"); setSource("all"); setTagId(""); setSort("priority"); }
   const connecting = session?.phase === "connecting";
   const available = Boolean(session?.connected || session?.availableOffline);
   const parentTask = tasks.find((task) => task.id === parentTaskId);
@@ -158,7 +170,7 @@ export default function PersonalBoard() {
   let displayColumns: DisplayColumn[];
   if (source === "manual") displayColumns = COLUMNS.map((column) => ({ ...column, localStatus: column.id }));
   else {
-    displayColumns = (session?.metadata?.columns || []).filter((column) => !column.done).map((column) => ({ id: column.id, label: column.name, jiraStatuses: column.statuses.map((status) => status.id) }));
+    displayColumns = orderNamedOptions(session?.metadata?.columns || [], uiSettings.statusOrder).filter((column) => !column.done).map((column) => ({ id: column.id, label: column.name, jiraStatuses: column.statuses.map((status) => status.id) }));
     const mapped = new Set(displayColumns.flatMap((column) => column.jiraStatuses || []));
     for (const task of groups.map(displayTask).filter((task) => task.source === "jira")) {
       const state = task.jiraStatusId || task.state || "pending";
@@ -174,6 +186,26 @@ export default function PersonalBoard() {
     try { const result = await work() as { warning?: string } | undefined; await refresh(); setError(""); if (result?.warning) setMessage(result.warning); return true; }
     catch (error) { setError(error instanceof Error ? error.message : "Unable to save."); return false; }
     finally { mutationInFlight.current = false; setBusy(false); }
+  }
+
+  async function tagsChanged() {
+    const next = await requestJson("/api/tags");
+    setTags(next.tags);
+    setTagId((current) => next.tags.some((tag: TaskTag) => tag.id === current) ? current : "");
+    await refresh();
+  }
+  async function setTaskTag(task: Task, id: string, assigned: boolean) {
+    // Keep rapid shortcut presses in order; adding one tag never replaces another.
+    tagWrites.current = tagWrites.current.then(async () => {
+      setTaggingId(task.id);
+      try {
+        const result = await requestJson(`/api/tasks/${task.id}/tags`, { method: "PUT", body: JSON.stringify({ tagId: id, assigned }) });
+        setTasks((current) => current.map((row) => row.id === task.id ? { ...row, tags: result.tags } : row));
+        setError("");
+      } catch (error) { setError(error instanceof Error ? error.message : "Unable to save tag."); }
+      finally { setTaggingId(null); }
+    });
+    await tagWrites.current;
   }
 
   async function connect(token = "", remember = false) {
@@ -205,24 +237,59 @@ export default function PersonalBoard() {
     finally { setBusy(false); }
   }
 
-  async function move(task: Task, status: string) {
-    const payload = task.source === "jira" ? { ...(status === "done" || status === "restore" ? { action: status } : { targetColumnId: status }), expectedUpdatedAt: task.jiraUpdatedAt } : { status: status === "restore" ? "now" : status };
-    await mutate(() => requestJson(`/api/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify(payload) }));
+  function movePayload(task: Task, status: string) {
+    return task.source === "jira" ? { ...(status === "done" || status === "restore" ? { action: status } : { targetColumnId: status }), expectedUpdatedAt: task.jiraUpdatedAt } : { status: status === "restore" ? "now" : status };
   }
-
+  async function move(task: Task, status: string) {
+    await mutate(() => requestJson(`/api/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify(movePayload(task, status)) }));
+  }
+  function inColumn(group: TaskGroup, column: DisplayColumn) {
+    const task = displayTask(group);
+    return column.jiraStatuses ? task.source === "jira" && column.jiraStatuses.includes(task.jiraStatusId || task.state || "pending") : task.source === "manual" && (column.legacy || task.status === column.localStatus);
+  }
+  function allActiveGroups() {
+    // Include filtered-out cards so dragging never shuffles hidden tasks.
+    return sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view: "active", source: "all", priority: "all", state: "all", query: "" }), sort);
+  }
+  function saveOrder(ids: number[], parentKey: string | null = null) {
+    return requestJson("/api/tasks/reorder", { method: "POST", body: JSON.stringify({ ids, parentKey }) });
+  }
   async function drop(column: DisplayColumn, before?: number) {
-    if (draggingId === null || busy) return;
+    if (draggingId === null || busy || before === draggingId) return;
     const id = draggingId;
     setDraggingId(null);
     const task = tasks.find((task) => task.id === id);
-    if (!task) return;
-    if (task.source === "jira") { if (column.id.startsWith("jira-column-")) await move(task, column.id); return; }
-    if (!column.localStatus) return;
-    const status = column.localStatus as Exclude<Status, "done">;
-    const columns = Object.fromEntries(COLUMNS.map((column) => [column.id, tasks.filter((task) => task.source === "manual" && !task.archived && task.status === column.id && task.id !== id).map((task) => task.id)])) as Record<Exclude<Status, "done">, number[]>;
-    const index = before === undefined ? -1 : columns[status].indexOf(before);
-    if (index < 0) columns[status].push(id); else columns[status].splice(index, 0, id);
-    if (await mutate(() => requestJson("/api/tasks/reorder", { method: "POST", body: JSON.stringify({ columns }) }))) setSort("priority");
+    if (!task || task.parentKey) return;
+    const ordered = allActiveGroups().filter((group) => group.parent);
+    const currentGroup = ordered.find((group) => group.parent!.id === id);
+    if (!currentGroup) return;
+    const changingColumn = !inColumn(currentGroup, column);
+    if (changingColumn && (task.source === "jira" ? !column.id.startsWith("jira-column-") : !column.localStatus)) return;
+    const ids = ordered.map((group) => group.parent!.id);
+    // A column-background drop appends after that column's last card.
+    if (before === undefined) {
+      const remaining = ordered.filter((group) => group.parent!.id !== id);
+      const last = remaining.findLastIndex((group) => inColumn(group, column));
+      before = last < 0 ? undefined : remaining[last + 1]?.parent?.id;
+    }
+    const next = moveTaskBefore(ids, id, before);
+    if (await mutate(async () => {
+      if (changingColumn) await requestJson(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(movePayload(task, task.source === "jira" ? column.id : column.localStatus!)) });
+      await saveOrder(next);
+    })) setSort("manual");
+  }
+  async function dropSubtask(parentKey: string, before?: number) {
+    if (draggingId === null || busy || before === draggingId) return;
+    const id = draggingId;
+    setDraggingId(null);
+    if (tasks.find((task) => task.id === id)?.parentKey !== parentKey) return;
+    const ids = orderSubtasks(tasks.filter((task) => task.parentKey === parentKey)).map((task) => task.id);
+    if (before !== undefined && !ids.includes(before)) return;
+    if (await mutate(async () => {
+      const roots = allActiveGroups().flatMap((group) => group.parent ? [group.parent.id] : []);
+      if (roots.length) await saveOrder(roots);
+      await saveOrder(moveTaskBefore(ids, id, before), parentKey);
+    })) setSort("manual");
   }
 
   async function enableNotifications() {
@@ -235,28 +302,31 @@ export default function PersonalBoard() {
   return (
     <main className="personal-app">
       <header className="app-header">
-        <div><h1>My tasks</h1><p>{session?.metadata?.boardName ? `${session.metadata.boardName} · ` : ""}{settings.email}</p></div>
+        <div className="board-heading"><h1>My tasks</h1><p>{session?.metadata?.boardName ? `${session.metadata.boardName} · ` : ""}{settings.email}</p></div>
         <div className="header-actions">
           <button aria-pressed={view === "reminders"} onClick={() => { resetFilters(); setView(view === "reminders" ? "active" : "reminders"); }} title="Show every task with a reminder">Reminders ({reminderCount})</button>
+          <button aria-pressed={view === "overdue"} onClick={() => { resetFilters(); setView(view === "overdue" ? "active" : "overdue"); }} title="Show unfinished tasks with due dates before today">Overdue ({overdueCount})</button>
+          <button onClick={() => setShowTags(true)}>Tags</button>
           <button className="layout-toggle" onClick={toggleDetailPosition} aria-label={`Open task details in ${detailPosition === "right" ? "the center" : "the right side"}`} title="Remembered on this device">Details: {detailPosition === "right" ? "Right" : "Center"}</button>
           {session?.queue?.pending ? <button className={session.queue.attention ? "sync-attention" : ""} onClick={() => setShowQueue(true)}>{session.queue.pending} pending{session.queue.attention ? ` · ${session.queue.attention} need attention` : ""}</button> : null}
           <button className="primary" disabled={!available || busy} title={!available ? "Connect Jira once to cache your task fields" : "Create a task, online or offline"} onClick={() => { setError(""); setParentTaskId(null); setShowNew(true); }}>+ New task</button>
         </div>
       </header>
 
-      <section className="board-controls" aria-label="Board controls">
+      <section className={`board-controls${tags.length ? " has-tags" : ""}`} aria-label="Board controls">
         <div className="segmented task-views" aria-label="Task view">
           <button aria-pressed={view === "active"} onClick={() => setView("active")}>Active</button>
           <button aria-pressed={view === "done"} onClick={() => setView("done")}>Done</button>
         </div>
         <div className="toolbar-search">
           <label className="toolbar-label" htmlFor="board-search">Search</label>
-          <div className="board-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input id="board-search" ref={searchInput} type="search" className="search" placeholder="Search tasks, comments, subtasks…" aria-label="Search tasks" aria-describedby="search-help" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setQuery(""); } }} />{query ? <button type="button" aria-label="Clear search" title="Clear search (Esc)" onClick={() => { setQuery(""); searchInput.current?.focus(); }}>×</button> : null}</div>
+          <div className="board-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input id="board-search" ref={searchInput} type="search" className="search" placeholder="Search tasks…" aria-label="Search tasks" aria-describedby="search-help" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setQuery(""); } }} />{query ? <button type="button" aria-label="Clear search" title="Clear search (Esc)" onClick={() => { setQuery(""); searchInput.current?.focus(); }}>×</button> : null}</div>
           {tasks.some((task) => task.source === "manual") ? <div className="segmented task-sources" aria-label="Task source">
             {([['all', 'All tasks'], ['jira', 'Jira'], ['manual', 'Local']] as const).map(([id, label]) => <button key={id} aria-pressed={source === id} onClick={() => setSource(id)}>{label}</button>)}
           </div> : null}
         </div>
-        <div className="toolbar-sort"><ChoiceButtons compact label="Sort" value={sort} onChange={setSort} options={[{ id: "priority", name: "Priority" }, { id: "oldest", name: "Days" }]} /></div>
+        {tags.length ? <section className="toolbar-tags" aria-label="Filter by tag"><span className="toolbar-label">Tags</span><div className="tag-filters"><button type="button" aria-pressed={!tagId} onClick={() => setTagId("")}>All</button>{tags.map((tag) => <button type="button" key={tag.id} aria-pressed={tagId === tag.id} onClick={() => setTagId(tagId === tag.id ? "" : tag.id)}>{tag.name}</button>)}</div></section> : null}
+        <div className="toolbar-sort" title="Priority: High → Medium → Low, oldest first within each priority. Days: overdue and fired reminders first, then oldest first."><ChoiceButtons compact label={sort === "manual" ? "Sort · Manual" : "Sort"} value={sort} onChange={setSort} options={[{ id: "priority", name: "Priority" }, { id: "oldest", name: "Days" }]} /></div>
         <div className="toolbar-connection">
           <span className="toolbar-label">Jira sync</span>
           <button className={`connection ${session?.connected ? "connected" : "disconnected"}`} aria-pressed={Boolean(session?.connected)} aria-busy={syncing || connecting || connectingBusy} title={session?.connected ? "Sync is automatic. Click to work offline." : `${session?.paused ? "Sync is paused." : session?.message || "Working offline."} Click to reconnect Jira.`} disabled={session === null || syncing || connecting || connectingBusy || busy} onClick={() => {
@@ -265,40 +335,43 @@ export default function PersonalBoard() {
             else { setError(""); setShowConnection(true); }
           }}><span aria-live="polite">{connecting || connectingBusy ? "Connecting…" : session === null ? "Checking…" : session.connected ? "Jira connected" : "Offline"}</span></button>
         </div>
-        <div className="toolbar-priority"><ChoiceButtons compact label="Priority" value={priority} onChange={setPriority} options={[{ id: "all", name: "All" }, { id: "high", name: "High" }, { id: "3", name: "Medium" }, { id: "4", name: "Low" }]} /></div>
+        <div className="toolbar-priority"><ChoiceButtons compact label="Priority" order={["All", ...uiSettings.priorityOrder]} value={priority} onChange={setPriority} options={[{ id: "all", name: "All" }, { id: "high", name: "High" }, { id: "3", name: "Medium" }, { id: "4", name: "Low" }]} /></div>
       </section>
 
-      {view === "reminders" ? <div className="notice reminder-view"><span>Tasks with reminders · soonest first. Parent tasks and subtasks stay together.</span><button onClick={() => void enableNotifications()}>Enable desktop notifications</button><button onClick={() => setView("active")}>Back to Active</button></div> : null}
+      {view === "reminders" || view === "overdue" ? <div className="notice filtered-view"><span>{view === "overdue" ? "Unfinished tasks with due dates before today" : "Tasks with reminders"} · using the selected sort. Parent tasks and subtasks stay together.</span>{view === "reminders" ? <button onClick={() => void enableNotifications()}>Enable desktop notifications</button> : null}<button onClick={() => setView("active")}>Back to Active</button></div> : null}
       {!available && session?.message ? <p className="notice" role="status">{session.message}</p> : null}
       {error ? <div className="notice error" role="alert"><span>{error}</span><button onClick={() => setError("")}>Dismiss</button></div> : null}
       {message ? <div className="notice" role="status"><span>{message}</span><button onClick={() => setMessage("")}>Dismiss</button></div> : null}
 
       <section className="bulk-bar" aria-label="Bulk task actions" aria-busy={busy}>
-        <label><input ref={selectAll} type="checkbox" checked={allChecked} disabled={busy || loading || !visible.length} onChange={() => setChecked(allChecked ? new Set() : new Set(visible.map((task) => task.id)))} /> Select all visible ({visible.length})</label>
+        <label><input ref={selectAll} type="checkbox" checked={allChecked} disabled={busy || loading || !visible.length} title="Select all matching tasks, including collapsed subtasks" onChange={() => setChecked(allChecked ? new Set() : new Set(visible.map((task) => task.id)))} /> Select all ({visible.length})</label>
         <span className="task-count" role="status">{loading ? "Loading…" : `${groups.length} task ${groups.length === 1 ? "group" : "groups"}`}{query ? ` · ${visible.length} matches` : ""}</span>
+        {collapsibleGroups.length ? <button className="subtasks-toggle-all" type="button" onClick={() => setSubtasksCollapsed(collapsibleGroups.map(collapseKey), !allSubtasksCollapsed)}>{allSubtasksCollapsed ? "Expand all subtasks" : "Collapse all subtasks"}</button> : null}
         {checked.size ? <div className="bulk-actions"><span className="selection-count" role="status">{checkedVisible.length} selected</span><button disabled={busy} onClick={() => setChecked(new Set())}>Clear</button>{view === "active" ? <button disabled={busy} onClick={() => void bulk("done")}>Mark selected done</button> : null}<button className="danger" disabled={busy} onClick={() => void bulk("delete")}>Delete selected</button></div> : null}
-        <details className="search-help"><summary>Search help</summary><p id="search-help">Search by title, key, description, labels, notes, cached comments, or subtasks. Combine words, use &quot;exact phrases&quot; or -exclude. Filters: key:KAN2, priority:high, status:&quot;In Progress&quot;, label:home, comment:&quot;follow up&quot;, due:overdue, has:comments, is:subtask. Cmd/Ctrl+F or / focuses search; Esc clears it.</p></details>
+        <details className="search-help"><summary>Search help</summary><p id="search-help">Search by title, key, description, labels, notes, cached comments, or subtasks. Combine words, use &quot;exact phrases&quot; or -exclude. Filters: key:KAN2, tag:work, priority:high, status:&quot;In Progress&quot;, label:home, comment:&quot;follow up&quot;, due:overdue, has:comments, is:subtask. Cmd/Ctrl+F or / focuses search; Esc clears it.</p></details>
       </section>
 
-      {!loading && !groups.length ? <p className="empty-state" role="status">{query || priority !== "all" ? "No tasks match your search or filters. Try clearing them or switching Active / Done." : view === "reminders" ? "No tasks have reminders set. Add a reminder in task details." : view === "done" ? "No completed tasks." : "No active tasks."}</p> : null}
+      {!loading && !groups.length ? <p className="empty-state" role="status">{query || priority !== "all" || tagId ? "No tasks match your search or filters. Try clearing them or switching Active / Done." : view === "overdue" ? "No overdue tasks." : view === "reminders" ? "No tasks have reminders set. Add a reminder in task details." : view === "done" ? "No completed tasks." : "No active tasks."}</p> : null}
       {loading ? <p className="empty-state" role="status">Loading tasks…</p> : view === "active" ? <section className="task-board" aria-label="Active tasks">{displayColumns.map((column) => {
-        const rows = groups.filter((group) => { const task = displayTask(group); return column.jiraStatuses ? task.source === "jira" && column.jiraStatuses.includes(task.jiraStatusId || task.state || "pending") : task.source === "manual" && (column.legacy || task.status === column.localStatus); });
-        return <section className="task-column" key={column.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void drop(column); }}>
+        const rows = groups.filter((group) => inColumn(group, column));
+        return <section className="task-column" key={column.id} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); void drop(column); }}>
           <h2>{column.label}<span>{rows.length}</span></h2>
-          {rows.map((group) => <TaskGroupCard key={group.key} group={group} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} onDragStart={() => setDraggingId(group.parent?.id ?? null)} onDragEnd={() => setDraggingId(null)} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void drop(column, group.parent?.id); }} />)}
+          {rows.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={setTagId} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} onSubtaskDrop={(before) => { if (!group.parent || tasks.find((task) => task.id === draggingId)?.parentKey !== group.parent.jiraKey) return false; void dropSubtask(group.parent.jiraKey, before); return true; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void drop(column, group.parent?.id); }} />)}
           {!rows.length ? <p className="column-empty">No tasks</p> : null}
         </section>;
-      })}</section> : <section className="done-list" aria-label={view === "reminders" ? "Tasks with reminders" : "Completed tasks"}>{groups.map((group) => <TaskGroupCard key={group.key} group={group} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} />)}</section>}
+      })}</section> : <section className="done-list" aria-label={view === "overdue" ? "Overdue tasks" : view === "reminders" ? "Tasks with reminders" : "Completed tasks"}>{groups.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={setTagId} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} />)}</section>}
 
+      {showTags ? <TagManager tags={tags} onChanged={tagsChanged} onClose={() => setShowTags(false)} /> : null}
       {showConnection ? <JiraConnection session={session} busy={connectingBusy} error={error} onClose={() => setShowConnection(false)} onConnect={connect} /> : null}
       {showQueue ? <SyncQueuePanel onClose={() => setShowQueue(false)} onChanged={async () => { await sync(); }} /> : null}
-      {showNew ? <JiraTaskEditor position={detailPosition} onTogglePosition={toggleDetailPosition} key={parentTaskId ? `create-subtask:${parentTaskId}` : "create-task"} parentTask={parentTask} tasks={tasks} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => { setShowNew(false); if (parentTaskId) setSelectedId(parentTaskId); setParentTaskId(null); }} onChanged={refresh} onSave={(payload) => mutate(async () => { const result = await requestJson("/api/tasks", { method: "POST", body: JSON.stringify(payload) }); setMessage(result.warning || (result.pending ? "Task saved on this device and queued for Jira sync." : `Created ${result.jiraKey} in Jira.`)); return result; })} /> : null}
-      {selected?.source === "jira" ? <JiraTaskEditor position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} tasks={tasks} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => setSelectedId(null)} onChanged={refresh} onAddSubtask={(parent) => { setSelectedId(null); setParentTaskId(parent.id); setShowNew(true); }} onOpenTask={setSelectedId} onRenameSubtask={(child, title, baseSummary) => mutate(() => requestJson(`/api/tasks/${child.id}`, { method: "PATCH", body: JSON.stringify({ fields: { summary: title }, baseFields: { summary: baseSummary }, expectedUpdatedAt: child.jiraUpdatedAt }) }))} onSave={(payload) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(payload) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” from Jira and remove its private notes when sync completes? This cannot be undone after Jira confirms deletion. Unselected subtasks will be kept.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE", body: JSON.stringify({ confirmDelete: true }) }))) setSelectedId(null); }} /> : selected ? <TaskEditor position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} title="Local task details" busy={busy} onClose={() => setSelectedId(null)} onSave={(changes) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(changes) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” and its notes? This cannot be undone.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE" }))) setSelectedId(null); }} /> : null}
+      {showNew ? <JiraTaskEditor tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags} taggingId={taggingId} onSetTaskTag={(task, id, assigned) => void setTaskTag(task, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={parentTaskId ? `create-subtask:${parentTaskId}` : "create-task"} parentTask={parentTask} tasks={tasks} session={session} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => { setShowNew(false); if (parentTaskId) setSelectedId(parentTaskId); setParentTaskId(null); }} onChanged={refresh} onSave={(payload) => mutate(async () => { const result = await requestJson("/api/tasks", { method: "POST", body: JSON.stringify(payload) }); setMessage(result.warning || (result.pending ? "Task saved on this device and queued for Jira sync." : `Created ${result.jiraKey} in Jira.`)); return result; })} /> : null}
+      {selected?.source === "jira" ? <JiraTaskEditor tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags} taggingId={taggingId} onSetTaskTag={(task, id, assigned) => void setTaskTag(task, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} tasks={tasks} session={session} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => setSelectedId(null)} onChanged={refresh} onAddSubtask={(parent) => { setSelectedId(null); setParentTaskId(parent.id); setShowNew(true); }} onOpenTask={setSelectedId} onRenameSubtask={(child, title, baseSummary) => mutate(() => requestJson(`/api/tasks/${child.id}`, { method: "PATCH", body: JSON.stringify({ fields: { summary: title }, baseFields: { summary: baseSummary }, expectedUpdatedAt: child.jiraUpdatedAt }) }))} onSave={(payload) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(payload) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” from Jira and remove its private notes when sync completes? This cannot be undone after Jira confirms deletion. Unselected subtasks will be kept.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE", body: JSON.stringify({ confirmDelete: true }) }))) setSelectedId(null); }} /> : selected ? <TaskEditor tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags} tagging={taggingId === selected.id} onSetTag={(id, assigned) => void setTaskTag(selected, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} title="Local task details" busy={busy} onClose={() => setSelectedId(null)} onSave={(changes) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(changes) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” and its notes? This cannot be undone.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE" }))) setSelectedId(null); }} /> : null}
     </main>
   );
 }
 
-function TaskEditor({ task, title, busy, onClose, onSave, onDelete, position, onTogglePosition }: {
+function TaskEditor({ task, title, busy, onClose, onSave, onDelete, position, onTogglePosition, tags, onManageTags, tagShortcutsEnabled, tagging, onSetTag }: {
+  tags: TaskTag[]; onManageTags: () => void; tagShortcutsEnabled: boolean; tagging: boolean; onSetTag: (id: string, assigned: boolean) => void;
   task: Task; position: DetailPosition; onTogglePosition: () => void; title: string; busy: boolean; onClose: () => void; onSave: (changes: Changes) => Promise<boolean>; onDelete?: () => Promise<void>;
 }) {
   const [name, setName] = useState(task.title);
@@ -319,10 +392,10 @@ function TaskEditor({ task, title, busy, onClose, onSave, onDelete, position, on
   return <Modal position={position} onTogglePosition={onTogglePosition} title={title} onClose={() => void leave()} busy={closing || (busy && autosave.state !== "saving")}>
     <form ref={form} id={`local-task-${task.id}`} onSubmit={submit}><fieldset disabled={busy}>
       <label>Title<input autoFocus required maxLength={300} value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <WorkflowButtons options={[...COLUMNS.map((column) => ({ id: column.id, name: column.label })), { id: "done", name: "Done" }]} value={status} disabled={busy} onChange={(value) => setStatus(value as Status)} />
-      <ChoiceButtons label="Priority" value={String(priority === 1 ? 2 : priority)} disabled={busy} onChange={(value) => setPriority(Number(value) as Priority)} options={PRIORITY_OPTIONS} />
-      <ReminderField value={notifyAt} onChange={setNotifyAt} fired={Boolean(task.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} disabled={busy} />
-    </fieldset></form>
+      <WorkflowButtons options={[...COLUMNS.map((column) => ({ id: column.id, name: column.label })), { id: "done", name: "Done" }]} value={status} disabled={busy} onChange={(value) => { setStatus(value as Status); if (value === "done") setNotifyAt(""); }} />
+      <ChoiceButtons label="Priority" order={uiSettings.priorityOrder} value={String(priority === 1 ? 2 : priority)} disabled={busy} onChange={(value) => setPriority(Number(value) as Priority)} options={PRIORITY_OPTIONS} />
+      <ReminderField value={status === "done" ? "" : notifyAt} onChange={setNotifyAt} fired={Boolean(task.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} disabled={busy || status === "done"} />
+    </fieldset><TaskTags tags={tags} selected={(task.tags || []).map((tag) => tag.id)} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={tagging} onChange={onSetTag} /></form>
     <div className="form-actions"><span className={`save-status save-${autosave.state}`} role="status">{autosave.state === "saving" ? "Saving…" : autosave.state === "error" ? "Not saved · check required fields" : autosave.state === "unsaved" ? "Unsaved changes" : "Changes saved automatically"}</span><button className="primary" type="submit" form={`local-task-${task.id}`} disabled={closing}>{autosave.state === "error" ? "Retry save" : "Done"}</button></div>
     {onDelete ? <section className="delete-task-section"><button className="danger" type="button" disabled={busy} onClick={() => void onDelete()}>Delete task</button></section> : null}
   </Modal>;
