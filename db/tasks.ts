@@ -1,5 +1,6 @@
 import { getD1 } from "./index";
 import { personalTagSchema, tagOrderMigration } from "../lib/task-tags";
+import { personalAreaSchema } from "../lib/task-areas";
 import { clearCompletedReminders } from "../lib/task-reminders";
 import { jiraDateMigrations } from "../lib/jira-fields.mjs";
 
@@ -29,6 +30,7 @@ export async function ensureTaskSchema() {
     d1.prepare("CREATE TABLE IF NOT EXISTS jira_task_aliases (local_key TEXT PRIMARY KEY, jira_key TEXT NOT NULL)"),
     d1.prepare("CREATE TABLE IF NOT EXISTS jira_deleted_tasks (jira_key TEXT PRIMARY KEY)"),
     ...personalTagSchema.map((sql) => d1.prepare(sql)),
+    ...personalAreaSchema.map((sql) => d1.prepare(sql)),
   ]);
   const tagColumns = await d1.prepare("PRAGMA table_info(personal_tags)").all<{ name: string }>();
   if (!tagColumns.results.some((column) => column.name === "sort_order")) {

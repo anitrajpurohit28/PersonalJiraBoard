@@ -17,6 +17,8 @@ import type { DetailPosition } from "./useDetailPosition";
 import { orderSubtasks } from "../../lib/board-tasks";
 import { TaskTags } from "./TaskTags";
 import type { TaskTag } from "../../lib/task-tags";
+import type { TaskArea as Area } from "../../lib/task-areas";
+import { TaskArea } from "./TaskArea";
 import { cachedTaskEditor } from "../../lib/jira-editor-state";
 
 type Context = JiraEditorContext;
@@ -70,7 +72,8 @@ export function JiraFieldInput({ field, value, onChange, accountId, disabled, cu
   return <label>{label}<input form={formId} autoFocus={autoFocus} type={type} step={field.schema.type === "number" ? "any" : undefined} maxLength={field.fieldId === "summary" ? 255 : undefined} required={required} disabled={disabled} value={type === "datetime-local" ? localDateTime(typeof value === "string" && value ? value : null) : Array.isArray(value) ? value.join(", ") : value === undefined || value === null ? "" : String(value)} placeholder={field.fieldId === "parent" ? "e.g. KAN-2" : field.fieldId === "labels" ? "Comma-separated labels" : undefined} onInput={type === "date" ? (event) => onChange(event.currentTarget.value) : undefined} onChange={(event) => onChange(type === "datetime-local" ? event.target.value ? new Date(event.target.value).toISOString() : "" : field.fieldId === "parent" ? event.target.value.toUpperCase() : event.target.value)} /></label>;
 }
 
-export function JiraTaskEditor({ task, parentTask, tasks, session, busy, available, connected, serverError, onClose, onSave, onDelete, onAddSubtask, onRenameSubtask, onOpenTask, onChanged, position, onTogglePosition, tags, onManageTags, tagShortcutsEnabled, taggingId, onSetTaskTag }: {
+export function JiraTaskEditor({ task, parentTask, tasks, session, busy, available, connected, serverError, onClose, onSave, onDelete, onAddSubtask, onRenameSubtask, onOpenTask, onChanged, position, onTogglePosition, tags, onManageTags, tagShortcutsEnabled, taggingId, onSetTaskTag, areas, defaultAreaId, onManageAreas, onSetArea }: {
+  areas: Area[]; defaultAreaId: string | null; onManageAreas: () => void; onSetArea: (task: Task, id: string | null) => void;
   tags: TaskTag[]; onManageTags: () => void; tagShortcutsEnabled: boolean; taggingId: number | null; onSetTaskTag: (task: Task, id: string, assigned: boolean) => void;
   task?: Task; parentTask?: Task; tasks: Task[]; session?: JiraSession | null; busy: boolean; available: boolean; connected: boolean; serverError: string; onClose: () => void;
   onSave: (payload: Record<string, unknown>) => Promise<boolean>; onDelete?: () => Promise<void>;
@@ -78,6 +81,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   onAddSubtask?: (parent: Task) => void; onOpenTask?: (id: number) => void; onChanged: () => Promise<void>; position: DetailPosition; onTogglePosition: () => void;
 }) {
   const [newTagIds, setNewTagIds] = useState<string[]>([]);
+  const [newAreaId, setNewAreaId] = useState<string | null>(parentTask?.areaId || defaultAreaId);
   const [cached] = useState(() => cachedTaskEditor(task, session));
   const [context, setContext] = useState<Context | null>(cached);
   const [project, setProject] = useState(task?.projectId || parentTask?.projectId || "");
@@ -180,7 +184,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
       .map((child) => ({ task: child, title: subtaskTitles[child.id].trim(), baseSummary: subtaskInitial.current[child.id] }));
     const saveTask = !task || Boolean(Object.keys(fieldsToSave).length || targetStatusId || Object.keys(reminderFields).length);
     if (!saveTask && !renames.length) return null;
-    const payload = task ? { fields: fieldsToSave, baseFields: rawInitial.current, expectedUpdatedAt: rawInitial.current.updated, targetStatusId, transitionFields: normalizeValues(transitionFields, transition?.fields || []) } : { requestId: requestId.current, projectId: project, issueTypeId: issueType, parentKey, tagIds: newTagIds.filter((id) => tags.some((tag) => tag.id === id)), fields: fieldsToSave, subtasks: children.map((child) => ({ requestId: child.requestId, fields: normalizeValues(child.fields, childContext?.fields || []) })) };
+    const payload = task ? { fields: fieldsToSave, baseFields: rawInitial.current, expectedUpdatedAt: rawInitial.current.updated, targetStatusId, transitionFields: normalizeValues(transitionFields, transition?.fields || []) } : { requestId: requestId.current, projectId: project, issueTypeId: issueType, parentKey, areaId: areas.some((area) => area.id === newAreaId) ? newAreaId : null, tagIds: newTagIds.filter((id) => tags.some((tag) => tag.id === id)), fields: fieldsToSave, subtasks: children.map((child) => ({ requestId: child.requestId, fields: normalizeValues(child.fields, childContext?.fields || []) })) };
     return { payload: { ...payload, ...reminderFields }, normalized, notifyAt, status: targetStatusId ? transition?.to : undefined, saveTask, renames };
   }
 
@@ -241,6 +245,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
       {task && context ? <WorkflowButtons options={[{ id: currentStatusId, name: currentStatus?.name || task.state || "Current" }, ...(context.transitions || []).map((entry) => ({ id: entry.to.id, name: entry.to.name }))]} value={target || currentStatusId} disabled={busy} onChange={(value) => { dirty.current = true; setTarget(value === currentStatusId ? "" : value); if (context.transitions?.find((entry) => entry.to.id === value)?.to.category === "done") setNotifyAt(""); setTransitionFields({}); }} /> : null}
       {requiredTransitionFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={transitionFields[field.fieldId]} accountId={context?.accountId || ""} disabled={busy} onChange={(value) => setTransitionFields((current) => ({ ...current, [field.fieldId]: value }))} />)}
       </fieldset>
+      <TaskArea areas={areas} value={task ? task.areaId : isSubtask ? (parentTask || tasks.find((row) => row.jiraKey === values.parent))?.areaId || null : newAreaId} inherited={isSubtask} disabled={busy} onManage={onManageAreas} onChange={(id) => { if (task) onSetArea(task, id); else setNewAreaId(id); }} />
       <TaskTags tags={tags} selected={task ? (task.tags || []).map((tag) => tag.id) : newTagIds} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={task ? taggingId === task.id : busy} onChange={(id, assigned) => { if (task) onSetTaskTag(task, id, assigned); else if (!busy) setNewTagIds((current) => assigned ? [...new Set([...current, id])] : current.filter((item) => item !== id)); }} />
       {!task && !isSubtask && context?.issueTypes?.some((type) => type.subtask) ? <section className="subtasks-section"><h3>Subtasks</h3>{children.map((child, index) => <fieldset className="subtask-draft" key={child.requestId} disabled={busy}><div className="section-heading"><strong>Subtask {index + 1}</strong><button type="button" className="danger" onClick={() => setChildren((current) => current.filter((entry) => entry.requestId !== child.requestId))}>Remove subtask</button></div>{childFields.length ? childFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={child.fields[field.fieldId]} autoFocus={field.fieldId === "summary"} accountId={context.accountId} disabled={busy} onChange={(value) => setChildren((current) => current.map((entry) => entry.requestId === child.requestId ? { ...entry, fields: { ...entry.fields, [field.fieldId]: value } } : entry))} />) : <p role="status">Loading subtask fields…</p>}</fieldset>)}<button type="button" disabled={busy || loading} onClick={() => setChildren((current) => [...current, { requestId: crypto.randomUUID(), fields: childContext ? defaultValues(childContext.fields) : {} }])}>+ Add subtask</button></section> : null}
       {!task ? reminderControl : null}

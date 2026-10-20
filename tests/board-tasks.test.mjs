@@ -335,8 +335,79 @@ test("private tags are searchable separately from Jira labels and filter matchin
   assert.equal(matchesTaskSearch([rows[1]], "label:work"), false);
   assert.equal(matchesTaskSearch([rows[0]], "tag:jira-only"), false);
   assert.equal(matchesTaskSearch([rows[2]], 'tag:"personal finance"'), true);
-  const result = filterTaskGroups(groups, filters({ tagId: "work", query: "release review" }));
+  const result = filterTaskGroups(groups, filters({ tagIds: ["work"], query: "release review" }));
   assert.deepEqual(result[0].matches.map(row => row.id), [2]);
   assert.equal(result[0].parent.id, 1);
-  assert.equal(filterTaskGroups(groups, filters({ tagId: "missing" })).length, 0);
+  assert.equal(filterTaskGroups(groups, filters({ tagIds: ["missing"] })).length, 0);
+});
+
+
+test("multiple tag filters match any selected tag without duplicating tasks or selecting unrelated siblings", () => {
+  const work = { id: "work", name: "Work", shortcut: "w" }, finance = { id: "finance", name: "Finance", shortcut: "f" };
+  const rows = [
+    task(1, { tags: [work] }),
+    task(2, { parentKey: "KAN-1", tags: [finance] }),
+    task(3, { parentKey: "KAN-1" }),
+    task(4, { tags: [finance] }),
+    task(5, { tags: [work, finance] }),
+    task(6),
+  ];
+  const original = structuredClone(rows), groups = groupBoardTasks(rows);
+  const matching = (tagIds) => filterTaskGroups(groups, filters({ tagIds })).flatMap((group) => group.matches.map((row) => row.id));
+  assert.deepEqual(matching(["work", "finance"]), [1, 2, 4, 5]);
+  assert.deepEqual(matching(["work", "finance", "work"]), [1, 2, 4, 5]);
+  assert.deepEqual(matching(["finance"]), [2, 4, 5]);
+  assert.deepEqual(matching(["work"]), [1, 5]);
+  assert.deepEqual(matching([]), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(rows, original);
+});
+
+test("multiple tags combine with search, priority and attention views while retaining a matching child's parent", () => {
+  const work = { id: "work", name: "Work" }, personal = { id: "personal", name: "Personal" };
+  const groups = groupBoardTasks([
+    task(1, { title: "Release checklist", tags: [work], dueDate: "2026-11-01" }),
+    task(2, { parentKey: "KAN-1", title: "Pay invoice", tags: [personal], priority: 2, dueDate: "2026-10-15", notifyAt: "2026-10-16T10:00:00Z" }),
+    task(3, { parentKey: "KAN-1", tags: [work] }),
+    task(4, { title: "Archived", tags: [personal], archived: true, dueDate: "2026-10-15", notifyAt: "2026-10-16T10:00:00Z" }),
+  ]);
+  for (const view of ["active", "overdue", "reminders"]) {
+    const result = filterTaskGroups(groups, filters({ view, tagIds: ["work", "personal"], query: "release invoice", priority: "high" }), "2026-10-19");
+    assert.equal(result.length, 1);
+    assert.equal(result[0].parent.id, 1);
+    assert.deepEqual(result[0].matches.map((row) => row.id), [2]);
+  }
+  const done = filterTaskGroups(groups, filters({ view: "done", tagIds: ["work", "personal"] }));
+  assert.deepEqual(done.flatMap((group) => group.matches.map((row) => row.id)), [4]);
+});
+
+
+test("areas are exclusive across Active, Done, search, tags, Reminders and Overdue", () => {
+  const work = { id: "work-tag", name: "Work" };
+  const groups = groupBoardTasks([
+    task(1, { title: "Shared search", areaId: "work", tags: [work], dueDate: "2026-10-01", notifyAt: "2026-10-01T10:00:00Z" }),
+    task(2, { title: "Shared search", areaId: "personal", tags: [work], dueDate: "2026-10-01", notifyAt: "2026-10-01T10:00:00Z" }),
+    task(3, { title: "Shared search", areaId: null, tags: [work] }),
+    task(4, { title: "Shared search", areaId: "work", tags: [work], archived: true }),
+    task(5, { title: "Shared search", areaId: "personal", tags: [work], archived: true }),
+  ]);
+  for (const view of ["active", "reminders", "overdue"]) {
+    const selected = filterTaskGroups(groups, filters({ view, areaId: "work", query: "shared", tagIds: ["work-tag"] }), "2026-10-20");
+    assert.deepEqual(selected.flatMap((group) => group.matches.map((row) => row.id)), [1]);
+  }
+  assert.deepEqual(filterTaskGroups(groups, filters({ view: "done", areaId: "work" })).map((group) => group.parent.id), [4]);
+  assert.deepEqual(filterTaskGroups(groups, filters({ areaId: null })).map((group) => group.parent.id), [3]);
+  assert.deepEqual(filterTaskGroups(groups, filters({ areaId: "" })).map((group) => group.parent.id), [3]);
+  assert.equal(filterTaskGroups(groups, filters({ areaId: "learn" })).length, 0);
+});
+
+test("a parent and its subtasks stay in one area, including completed and matching child context", () => {
+  const groups = groupBoardTasks([
+    task(1, { areaId: "work" }),
+    task(2, { parentKey: "KAN-1", areaId: "work", archived: true }),
+    task(3, { parentKey: "KAN-1", areaId: "work", title: "Read reference" }),
+  ]);
+  assert.equal(filterTaskGroups(groups, filters({ areaId: "personal" })).length, 0);
+  const work = filterTaskGroups(groups, filters({ areaId: "work", query: "reference" }));
+  assert.equal(work[0].parent.id, 1);
+  assert.deepEqual(work[0].matches.map((row) => row.id), [1, 2, 3]);
 });

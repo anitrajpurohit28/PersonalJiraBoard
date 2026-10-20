@@ -1,7 +1,7 @@
 import type { Task } from "./task-types";
 
 export type TaskGroup = { key: string; parent: Task | null; children: Task[]; matches: Task[] };
-export type BoardFilters = { view: "active" | "done" | "reminders" | "overdue"; source: string; priority: string; state: string; query: string; tagId?: string };
+export type BoardFilters = { view: "active" | "done" | "reminders" | "overdue"; source: string; priority: string; state: string; query: string; tagIds?: readonly string[]; areaId?: string | null };
 type SearchTerm = { field: string; value: string; exclude: boolean; phrase: boolean };
 const normalize = (value: unknown) => String(value ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
 const compact = (value: string) => value.replace(/[^\p{L}\p{N}]/gu, "");
@@ -52,11 +52,14 @@ export function groupBoardTasks(tasks: Task[]): TaskGroup[] {
   return [...groups.values()];
 }
 export function filterTaskGroups(groups: TaskGroup[], filters: BoardFilters, today = localDay()): TaskGroup[] {
+  const selectedTags = new Set(filters.tagIds || []);
   return groups.flatMap((group) => {
+    const owner = group.parent || group.children[0];
+    if (filters.areaId !== undefined && (owner?.areaId || null) !== (filters.areaId || null)) return [];
     const members = [...(group.parent ? [group.parent] : []), ...group.children];
     // A completed child stays with its parent, until that parent is completed.
     if (filters.view !== "reminders" && filters.view !== "overdue" && group.parent && group.parent.archived !== (filters.view === "done")) return [];
-    const matches = members.filter((task) => (filters.view === "overdue" ? isTaskOverdue(task, today) : filters.view === "reminders" ? Boolean(!task.archived && task.notifyAt) : group.parent || task.archived === (filters.view === "done")) && (filters.source === "all" || task.source === filters.source) && (filters.priority === "all" || (filters.priority === "high" ? task.priority <= 2 : task.priority === Number(filters.priority))) && (filters.state === "all" || task.state === filters.state) && (!filters.tagId || task.tags?.some((tag) => tag.id === filters.tagId)));
+    const matches = members.filter((task) => (filters.view === "overdue" ? isTaskOverdue(task, today) : filters.view === "reminders" ? Boolean(!task.archived && task.notifyAt) : group.parent || task.archived === (filters.view === "done")) && (filters.source === "all" || task.source === filters.source) && (filters.priority === "all" || (filters.priority === "high" ? task.priority <= 2 : task.priority === Number(filters.priority))) && (filters.state === "all" || task.state === filters.state) && (!selectedTags.size || task.tags?.some((tag) => selectedTags.has(tag.id))));
     return matches.length && matchesTaskSearch(members, filters.query, today) ? [{ ...group, matches }] : [];
   });
 }

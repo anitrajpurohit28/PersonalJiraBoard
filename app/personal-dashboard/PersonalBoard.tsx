@@ -20,6 +20,11 @@ import { useTaskAutosave } from "./useTaskAutosave";
 import { ReminderField } from "./ReminderField";
 import { TaskTags } from "./TaskTags";
 import { TagManager } from "./TagManager";
+import { TagFilters } from "./TagFilters";
+import { AreaSwitcher } from "./AreaSwitcher";
+import { AreaManager } from "./AreaManager";
+import { TaskArea } from "./TaskArea";
+import type { TaskArea as Area } from "../../lib/task-areas";
 import type { TaskTag } from "../../lib/task-tags";
 import { reminderKey, remindersToFire } from "../../lib/task-reminders";
 
@@ -36,7 +41,10 @@ export default function PersonalBoard() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tags, setTags] = useState<TaskTag[]>([]);
   const [showTags, setShowTags] = useState(false);
-  const [tagId, setTagId] = useState("");
+  const [areas, setAreas] = useState<Area[]>([]);
+  const [areaId, setAreaId] = useState("");
+  const [showAreas, setShowAreas] = useState(false);
+  const [tagIds, setTagIds] = useState<string[]>([]);
   const [taggingId, setTaggingId] = useState<number | null>(null);
   const tagWrites = useRef<Promise<void>>(Promise.resolve());
   const [loading, setLoading] = useState(true);
@@ -66,12 +74,19 @@ export default function PersonalBoard() {
   const remindersInFlight = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
-    setTasks(await fetchTasks());
+    const [next, catalog] = await Promise.all([fetchTasks(), requestJson("/api/areas")]);
+    setTasks(next); setAreas(catalog.areas);
+    setAreaId((current) => catalog.areas.some((area: Area) => area.id === current) ? current : "");
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([fetchTasks(), requestJson("/api/tags")]).then(([next, catalog]) => { if (!cancelled) { setTasks(next); setTags(catalog.tags); } })
+    void Promise.all([fetchTasks(), requestJson("/api/tags"), requestJson("/api/areas")]).then(([next, catalog, areaCatalog]) => { if (!cancelled) {
+      let savedArea = "";
+      try { savedArea = localStorage.getItem(`${storageNamespace}-area`) || ""; } catch { /* Private browsing can disable saved preferences. */ }
+      setAreaId(areaCatalog.areas.some((area: Area) => area.id === savedArea) ? savedArea : "");
+      setTasks(next); setTags(catalog.tags); setAreas(areaCatalog.areas);
+    } })
       .catch((error) => { if (!cancelled) setError(error.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -150,7 +165,7 @@ export default function PersonalBoard() {
     window.addEventListener("keydown", focusSearch); return () => window.removeEventListener("keydown", focusSearch);
   }, []);
   const displayTask = (group: TaskGroup) => group.parent || group.matches[0];
-  const groups = sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view, source, priority, state: "all", query, tagId }), sort);
+  const groups = sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view, source, priority, state: "all", query, tagIds, areaId }), sort);
   const collapseKey = (group: TaskGroup) => group.parent ? String(group.parent.id) : group.key;
   const collapsibleGroups = groups.filter((group) => group.children.length);
   const allSubtasksCollapsed = collapsibleGroups.length > 0 && collapsibleGroups.every((group) => collapsedSubtasks.has(collapseKey(group)));
@@ -160,9 +175,11 @@ export default function PersonalBoard() {
   const allChecked = visible.length > 0 && checkedVisible.length === visible.length;
   useEffect(() => { if (selectAll.current) selectAll.current.indeterminate = checkedVisible.length > 0 && !allChecked; }, [checkedVisible.length, allChecked]);
   const selected = tasks.find((task) => task.id === selectedId);
-  const reminderCount = tasks.filter((task) => !task.archived && task.notifyAt).length;
-  const overdueCount = tasks.filter((task) => isTaskOverdue(task)).length;
-  function resetFilters() { setQuery(""); setPriority("all"); setSource("all"); setTagId(""); setSort("priority"); }
+  const currentAreaName = areas.find((area) => area.id === areaId)?.name || "Unassigned";
+  const areaTasks = tasks.filter((task) => (task.areaId || "") === areaId);
+  const reminderCount = areaTasks.filter((task) => !task.archived && task.notifyAt).length;
+  const overdueCount = areaTasks.filter((task) => isTaskOverdue(task)).length;
+  function resetFilters() { setQuery(""); setPriority("all"); setSource("all"); setTagIds([]); setSort("priority"); }
   const connecting = session?.phase === "connecting";
   const available = Boolean(session?.connected || session?.availableOffline);
   const parentTask = tasks.find((task) => task.id === parentTaskId);
@@ -188,11 +205,24 @@ export default function PersonalBoard() {
     finally { mutationInFlight.current = false; setBusy(false); }
   }
 
+  function chooseArea(id: string) {
+    setAreaId(id); setQuery(""); setTagIds([]); setPriority("all"); setSource("all"); setChecked(new Set());
+    try { localStorage.setItem(`${storageNamespace}-area`, id); } catch { /* Preferences are optional. */ }
+  }
+  async function moveTasksToArea(ids: number[], id: string | null) {
+    if (await mutate(() => requestJson("/api/tasks/area", { method: "PUT", body: JSON.stringify({ ids, areaId: id }) }))) {
+      setChecked(new Set());
+      setMessage(`Moved to ${areas.find((area) => area.id === id)?.name || "Unassigned"}. Subtasks stay with their parent.`);
+    }
+  }
   async function tagsChanged() {
     const next = await requestJson("/api/tags");
     setTags(next.tags);
-    setTagId((current) => next.tags.some((tag: TaskTag) => tag.id === current) ? current : "");
+    setTagIds((current) => current.filter((id) => next.tags.some((tag: TaskTag) => tag.id === id)));
     await refresh();
+  }
+  function toggleTagFilter(id: string) {
+    setTagIds((current) => current.includes(id) ? current.filter((tagId) => tagId !== id) : [...current, id]);
   }
   async function setTaskTag(task: Task, id: string, assigned: boolean) {
     // Keep rapid shortcut presses in order; adding one tag never replaces another.
@@ -249,7 +279,7 @@ export default function PersonalBoard() {
   }
   function allActiveGroups() {
     // Include filtered-out cards so dragging never shuffles hidden tasks.
-    return sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view: "active", source: "all", priority: "all", state: "all", query: "" }), sort);
+    return sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view: "active", source: "all", priority: "all", state: "all", query: "", areaId }), sort);
   }
   function saveOrder(ids: number[], parentKey: string | null = null) {
     return requestJson("/api/tasks/reorder", { method: "POST", body: JSON.stringify({ ids, parentKey }) });
@@ -302,10 +332,10 @@ export default function PersonalBoard() {
   return (
     <main className="personal-app">
       <header className="app-header">
-        <div className="board-heading"><h1>My tasks</h1><p>{session?.metadata?.boardName ? `${session.metadata.boardName} · ` : ""}{settings.email}</p></div>
+        <div className="board-heading"><h1>My tasks</h1><AreaSwitcher areas={areas} value={areaId} onChange={chooseArea} onManage={() => setShowAreas(true)} /><p>{session?.metadata?.boardName ? `${session.metadata.boardName} · ` : ""}{settings.email}</p></div>
         <div className="header-actions">
-          <button aria-pressed={view === "reminders"} onClick={() => { resetFilters(); setView(view === "reminders" ? "active" : "reminders"); }} title="Show every task with a reminder">Reminders ({reminderCount})</button>
-          <button aria-pressed={view === "overdue"} onClick={() => { resetFilters(); setView(view === "overdue" ? "active" : "overdue"); }} title="Show unfinished tasks with due dates before today">Overdue ({overdueCount})</button>
+          <button aria-pressed={view === "reminders"} onClick={() => { resetFilters(); setView(view === "reminders" ? "active" : "reminders"); }} title="Show tasks with a reminder in this area">Reminders ({reminderCount})</button>
+          <button aria-pressed={view === "overdue"} onClick={() => { resetFilters(); setView(view === "overdue" ? "active" : "overdue"); }} title="Show overdue tasks in this area">Overdue ({overdueCount})</button>
           <button onClick={() => setShowTags(true)}>Tags</button>
           <button className="layout-toggle" onClick={toggleDetailPosition} aria-label={`Open task details in ${detailPosition === "right" ? "the center" : "the right side"}`} title="Remembered on this device">Details: {detailPosition === "right" ? "Right" : "Center"}</button>
           {session?.queue?.pending ? <button className={session.queue.attention ? "sync-attention" : ""} onClick={() => setShowQueue(true)}>{session.queue.pending} pending{session.queue.attention ? ` · ${session.queue.attention} need attention` : ""}</button> : null}
@@ -325,7 +355,7 @@ export default function PersonalBoard() {
             {([['all', 'All tasks'], ['jira', 'Jira'], ['manual', 'Local']] as const).map(([id, label]) => <button key={id} aria-pressed={source === id} onClick={() => setSource(id)}>{label}</button>)}
           </div> : null}
         </div>
-        {tags.length ? <section className="toolbar-tags" aria-label="Filter by tag"><span className="toolbar-label">Tags</span><div className="tag-filters"><button type="button" aria-pressed={!tagId} onClick={() => setTagId("")}>All</button>{tags.map((tag) => <button type="button" key={tag.id} aria-pressed={tagId === tag.id} onClick={() => setTagId(tagId === tag.id ? "" : tag.id)}>{tag.name}</button>)}</div></section> : null}
+        {tags.length ? <TagFilters tags={tags} selected={tagIds} onToggle={toggleTagFilter} onClear={() => setTagIds([])} /> : null}
         <div className="toolbar-sort" title="Priority: High → Medium → Low, oldest first within each priority. Days: overdue and fired reminders first, then oldest first."><ChoiceButtons compact label={sort === "manual" ? "Sort · Manual" : "Sort"} value={sort} onChange={setSort} options={[{ id: "priority", name: "Priority" }, { id: "oldest", name: "Days" }]} /></div>
         <div className="toolbar-connection">
           <span className="toolbar-label">Jira sync</span>
@@ -338,7 +368,7 @@ export default function PersonalBoard() {
         <div className="toolbar-priority"><ChoiceButtons compact label="Priority" order={["All", ...uiSettings.priorityOrder]} value={priority} onChange={setPriority} options={[{ id: "all", name: "All" }, { id: "high", name: "High" }, { id: "3", name: "Medium" }, { id: "4", name: "Low" }]} /></div>
       </section>
 
-      {view === "reminders" || view === "overdue" ? <div className="notice filtered-view"><span>{view === "overdue" ? "Unfinished tasks with due dates before today" : "Tasks with reminders"} · using the selected sort. Parent tasks and subtasks stay together.</span>{view === "reminders" ? <button onClick={() => void enableNotifications()}>Enable desktop notifications</button> : null}<button onClick={() => setView("active")}>Back to Active</button></div> : null}
+      {view === "reminders" || view === "overdue" ? <div className="notice filtered-view"><span>{view === "overdue" ? `Unfinished overdue tasks in ${currentAreaName}` : `Tasks with reminders in ${currentAreaName}`} · using the selected sort. Parent tasks and subtasks stay together.</span>{view === "reminders" ? <button onClick={() => void enableNotifications()}>Enable desktop notifications</button> : null}<button onClick={() => setView("active")}>Back to Active</button></div> : null}
       {!available && session?.message ? <p className="notice" role="status">{session.message}</p> : null}
       {error ? <div className="notice error" role="alert"><span>{error}</span><button onClick={() => setError("")}>Dismiss</button></div> : null}
       {message ? <div className="notice" role="status"><span>{message}</span><button onClick={() => setMessage("")}>Dismiss</button></div> : null}
@@ -347,30 +377,32 @@ export default function PersonalBoard() {
         <label><input ref={selectAll} type="checkbox" checked={allChecked} disabled={busy || loading || !visible.length} title="Select all matching tasks, including collapsed subtasks" onChange={() => setChecked(allChecked ? new Set() : new Set(visible.map((task) => task.id)))} /> Select all ({visible.length})</label>
         <span className="task-count" role="status">{loading ? "Loading…" : `${groups.length} task ${groups.length === 1 ? "group" : "groups"}`}{query ? ` · ${visible.length} matches` : ""}</span>
         {collapsibleGroups.length ? <button className="subtasks-toggle-all" type="button" onClick={() => setSubtasksCollapsed(collapsibleGroups.map(collapseKey), !allSubtasksCollapsed)}>{allSubtasksCollapsed ? "Expand all subtasks" : "Collapse all subtasks"}</button> : null}
-        {checked.size ? <div className="bulk-actions"><span className="selection-count" role="status">{checkedVisible.length} selected</span><button disabled={busy} onClick={() => setChecked(new Set())}>Clear</button>{view === "active" ? <button disabled={busy} onClick={() => void bulk("done")}>Mark selected done</button> : null}<button className="danger" disabled={busy} onClick={() => void bulk("delete")}>Delete selected</button></div> : null}
+        {checked.size ? <div className="bulk-actions"><span className="selection-count" role="status">{checkedVisible.length} selected</span><button disabled={busy} onClick={() => setChecked(new Set())}>Clear</button><label className="bulk-area-move"><span className="sr-only">Move selected tasks to area</span><select aria-label="Move selected tasks to area" value="" disabled={busy} title="Moves selected tasks, their parent tasks and all subtasks" onChange={(event) => { if (event.target.value) void moveTasksToArea(checkedVisible.map((task) => task.id), event.target.value === "unassigned" ? null : event.target.value); }}><option value="" disabled>Move to area…</option><option value="unassigned">Unassigned</option>{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>{view === "active" ? <button disabled={busy} onClick={() => void bulk("done")}>Mark selected done</button> : null}<button className="danger" disabled={busy} onClick={() => void bulk("delete")}>Delete selected</button></div> : null}
         <details className="search-help"><summary>Search help</summary><p id="search-help">Search by title, key, description, labels, notes, cached comments, or subtasks. Combine words, use &quot;exact phrases&quot; or -exclude. Filters: key:KAN2, tag:work, priority:high, status:&quot;In Progress&quot;, label:home, comment:&quot;follow up&quot;, due:overdue, has:comments, is:subtask. Cmd/Ctrl+F or / focuses search; Esc clears it.</p></details>
       </section>
 
-      {!loading && !groups.length ? <p className="empty-state" role="status">{query || priority !== "all" || tagId ? "No tasks match your search or filters. Try clearing them or switching Active / Done." : view === "overdue" ? "No overdue tasks." : view === "reminders" ? "No tasks have reminders set. Add a reminder in task details." : view === "done" ? "No completed tasks." : "No active tasks."}</p> : null}
+      {!loading && !groups.length ? <p className="empty-state" role="status">{query || priority !== "all" || tagIds.length ? "No tasks match your search or filters. Try clearing them or switching Active / Done." : view === "overdue" ? "No overdue tasks." : view === "reminders" ? "No tasks have reminders set. Add a reminder in task details." : view === "done" ? "No completed tasks." : `No active tasks in ${currentAreaName}.`}</p> : null}
       {loading ? <p className="empty-state" role="status">Loading tasks…</p> : view === "active" ? <section className="task-board" aria-label="Active tasks">{displayColumns.map((column) => {
         const rows = groups.filter((group) => inColumn(group, column));
         return <section className="task-column" key={column.id} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); void drop(column); }}>
           <h2>{column.label}<span>{rows.length}</span></h2>
-          {rows.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={setTagId} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} onSubtaskDrop={(before) => { if (!group.parent || tasks.find((task) => task.id === draggingId)?.parentKey !== group.parent.jiraKey) return false; void dropSubtask(group.parent.jiraKey, before); return true; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void drop(column, group.parent?.id); }} />)}
+          {rows.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={toggleTagFilter} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} onSubtaskDrop={(before) => { if (!group.parent || tasks.find((task) => task.id === draggingId)?.parentKey !== group.parent.jiraKey) return false; void dropSubtask(group.parent.jiraKey, before); return true; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void drop(column, group.parent?.id); }} />)}
           {!rows.length ? <p className="column-empty">No tasks</p> : null}
         </section>;
-      })}</section> : <section className="done-list" aria-label={view === "overdue" ? "Overdue tasks" : view === "reminders" ? "Tasks with reminders" : "Completed tasks"}>{groups.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={setTagId} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} />)}</section>}
+      })}</section> : <section className="done-list" aria-label={view === "overdue" ? "Overdue tasks" : view === "reminders" ? "Tasks with reminders" : "Completed tasks"}>{groups.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={toggleTagFilter} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} />)}</section>}
 
+      {showAreas ? <AreaManager areas={areas} onChanged={refresh} onClose={() => setShowAreas(false)} /> : null}
       {showTags ? <TagManager tags={tags} onChanged={tagsChanged} onClose={() => setShowTags(false)} /> : null}
       {showConnection ? <JiraConnection session={session} busy={connectingBusy} error={error} onClose={() => setShowConnection(false)} onConnect={connect} /> : null}
       {showQueue ? <SyncQueuePanel onClose={() => setShowQueue(false)} onChanged={async () => { await sync(); }} /> : null}
-      {showNew ? <JiraTaskEditor tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags} taggingId={taggingId} onSetTaskTag={(task, id, assigned) => void setTaskTag(task, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={parentTaskId ? `create-subtask:${parentTaskId}` : "create-task"} parentTask={parentTask} tasks={tasks} session={session} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => { setShowNew(false); if (parentTaskId) setSelectedId(parentTaskId); setParentTaskId(null); }} onChanged={refresh} onSave={(payload) => mutate(async () => { const result = await requestJson("/api/tasks", { method: "POST", body: JSON.stringify(payload) }); setMessage(result.warning || (result.pending ? "Task saved on this device and queued for Jira sync." : `Created ${result.jiraKey} in Jira.`)); return result; })} /> : null}
-      {selected?.source === "jira" ? <JiraTaskEditor tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags} taggingId={taggingId} onSetTaskTag={(task, id, assigned) => void setTaskTag(task, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} tasks={tasks} session={session} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => setSelectedId(null)} onChanged={refresh} onAddSubtask={(parent) => { setSelectedId(null); setParentTaskId(parent.id); setShowNew(true); }} onOpenTask={setSelectedId} onRenameSubtask={(child, title, baseSummary) => mutate(() => requestJson(`/api/tasks/${child.id}`, { method: "PATCH", body: JSON.stringify({ fields: { summary: title }, baseFields: { summary: baseSummary }, expectedUpdatedAt: child.jiraUpdatedAt }) }))} onSave={(payload) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(payload) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” from Jira and remove its private notes when sync completes? This cannot be undone after Jira confirms deletion. Unselected subtasks will be kept.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE", body: JSON.stringify({ confirmDelete: true }) }))) setSelectedId(null); }} /> : selected ? <TaskEditor tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags} tagging={taggingId === selected.id} onSetTag={(id, assigned) => void setTaskTag(selected, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} title="Local task details" busy={busy} onClose={() => setSelectedId(null)} onSave={(changes) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(changes) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” and its notes? This cannot be undone.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE" }))) setSelectedId(null); }} /> : null}
+      {showNew ? <JiraTaskEditor areas={areas} defaultAreaId={areaId || null} onManageAreas={() => setShowAreas(true)} onSetArea={(task, id) => void moveTasksToArea([task.id], id)} tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags && !showAreas} taggingId={taggingId} onSetTaskTag={(task, id, assigned) => void setTaskTag(task, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={parentTaskId ? `create-subtask:${parentTaskId}` : "create-task"} parentTask={parentTask} tasks={tasks} session={session} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => { setShowNew(false); if (parentTaskId) setSelectedId(parentTaskId); setParentTaskId(null); }} onChanged={refresh} onSave={(payload) => mutate(async () => { const result = await requestJson("/api/tasks", { method: "POST", body: JSON.stringify(payload) }); setMessage(result.warning || (result.pending ? "Task saved on this device and queued for Jira sync." : `Created ${result.jiraKey} in Jira.`)); return result; })} /> : null}
+      {selected?.source === "jira" ? <JiraTaskEditor areas={areas} defaultAreaId={areaId || null} onManageAreas={() => setShowAreas(true)} onSetArea={(task, id) => void moveTasksToArea([task.id], id)} tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags && !showAreas} taggingId={taggingId} onSetTaskTag={(task, id, assigned) => void setTaskTag(task, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} tasks={tasks} session={session} busy={busy} available={available} connected={Boolean(session?.connected)} serverError={error} onClose={() => setSelectedId(null)} onChanged={refresh} onAddSubtask={(parent) => { setSelectedId(null); setParentTaskId(parent.id); setShowNew(true); }} onOpenTask={setSelectedId} onRenameSubtask={(child, title, baseSummary) => mutate(() => requestJson(`/api/tasks/${child.id}`, { method: "PATCH", body: JSON.stringify({ fields: { summary: title }, baseFields: { summary: baseSummary }, expectedUpdatedAt: child.jiraUpdatedAt }) }))} onSave={(payload) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(payload) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” from Jira and remove its private notes when sync completes? This cannot be undone after Jira confirms deletion. Unselected subtasks will be kept.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE", body: JSON.stringify({ confirmDelete: true }) }))) setSelectedId(null); }} /> : selected ? <TaskEditor areas={areas} onManageAreas={() => setShowAreas(true)} onSetArea={(id) => void moveTasksToArea([selected.id], id)} tags={tags} onManageTags={() => setShowTags(true)} tagShortcutsEnabled={!showTags && !showAreas} tagging={taggingId === selected.id} onSetTag={(id, assigned) => void setTaskTag(selected, id, assigned)} position={detailPosition} onTogglePosition={toggleDetailPosition} key={`edit:${selected.id}`} task={selected} title="Local task details" busy={busy} onClose={() => setSelectedId(null)} onSave={(changes) => mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "PATCH", body: JSON.stringify(changes) }))} onDelete={async () => { if (window.confirm(`Delete “${selected.title}” and its notes? This cannot be undone.`) && await mutate(() => requestJson(`/api/tasks/${selected.id}`, { method: "DELETE" }))) setSelectedId(null); }} /> : null}
     </main>
   );
 }
 
-function TaskEditor({ task, title, busy, onClose, onSave, onDelete, position, onTogglePosition, tags, onManageTags, tagShortcutsEnabled, tagging, onSetTag }: {
+function TaskEditor({ task, title, busy, onClose, onSave, onDelete, position, onTogglePosition, tags, onManageTags, tagShortcutsEnabled, tagging, onSetTag, areas, onManageAreas, onSetArea }: {
+  areas: Area[]; onManageAreas: () => void; onSetArea: (id: string | null) => void;
   tags: TaskTag[]; onManageTags: () => void; tagShortcutsEnabled: boolean; tagging: boolean; onSetTag: (id: string, assigned: boolean) => void;
   task: Task; position: DetailPosition; onTogglePosition: () => void; title: string; busy: boolean; onClose: () => void; onSave: (changes: Changes) => Promise<boolean>; onDelete?: () => Promise<void>;
 }) {
@@ -395,7 +427,7 @@ function TaskEditor({ task, title, busy, onClose, onSave, onDelete, position, on
       <WorkflowButtons options={[...COLUMNS.map((column) => ({ id: column.id, name: column.label })), { id: "done", name: "Done" }]} value={status} disabled={busy} onChange={(value) => { setStatus(value as Status); if (value === "done") setNotifyAt(""); }} />
       <ChoiceButtons label="Priority" order={uiSettings.priorityOrder} value={String(priority === 1 ? 2 : priority)} disabled={busy} onChange={(value) => setPriority(Number(value) as Priority)} options={PRIORITY_OPTIONS} />
       <ReminderField value={status === "done" ? "" : notifyAt} onChange={setNotifyAt} fired={Boolean(task.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} disabled={busy || status === "done"} />
-    </fieldset><TaskTags tags={tags} selected={(task.tags || []).map((tag) => tag.id)} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={tagging} onChange={onSetTag} /></form>
+    </fieldset><TaskArea areas={areas} value={task.areaId} disabled={busy} onChange={onSetArea} onManage={onManageAreas} /><TaskTags tags={tags} selected={(task.tags || []).map((tag) => tag.id)} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={tagging} onChange={onSetTag} /></form>
     <div className="form-actions"><span className={`save-status save-${autosave.state}`} role="status">{autosave.state === "saving" ? "Saving…" : autosave.state === "error" ? "Not saved · check required fields" : autosave.state === "unsaved" ? "Unsaved changes" : "Changes saved automatically"}</span><button className="primary" type="submit" form={`local-task-${task.id}`} disabled={closing}>{autosave.state === "error" ? "Retry save" : "Done"}</button></div>
     {onDelete ? <section className="delete-task-section"><button className="danger" type="button" disabled={busy} onClick={() => void onDelete()}>Delete task</button></section> : null}
   </Modal>;

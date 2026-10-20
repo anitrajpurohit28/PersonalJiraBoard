@@ -26,6 +26,7 @@ export type Task = {
   dueDate: string | null;
   labels: string[];
   tags: TaskTag[];
+  areaId: string | null;
   jiraUpdatedAt: string | null;
   syncStatus: string; syncError: string; isSubtask: boolean;
   comments: TaskComment[];

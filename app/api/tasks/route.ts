@@ -5,6 +5,8 @@ import { cacheJiraResult } from "../../../lib/jira-result";
 import { assertLocalMutation, errorResponse } from "../../../lib/local-request";
 import { parseTagIds, taskTagAssignment, tagOrderClause, type TaskTag } from "../../../lib/task-tags";
 import { listTags } from "../../../db/tags";
+import { areaTaskRows, requireArea } from "../../../db/areas";
+import { resolvedTaskAreas, initialTaskAreaStatement } from "../../../lib/task-areas";
 import { validLocalKey } from "../../../lib/jira-fields.mjs";
 
 type TaskRow = {
@@ -23,11 +25,13 @@ export async function GET(request: Request) {
   try {
     const d1 = await ensureTaskSchema();
     const archived = new URL(request.url).searchParams.get("view") === "done" ? 1 : 0;
-    const [tasks, updates, tags] = await Promise.all([
+    const [tasks, updates, tags, areaRows] = await Promise.all([
       d1.prepare("SELECT * FROM tasks WHERE archived = ? AND (source = 'manual' OR jira_query_active = 1) ORDER BY manual_order IS NULL, manual_order, priority, id DESC").bind(archived).all<TaskRow>(),
       d1.prepare("SELECT task_updates.* FROM task_updates INNER JOIN tasks ON tasks.id = task_updates.task_id WHERE tasks.archived = ? ORDER BY task_updates.created_at DESC, task_updates.id DESC").bind(archived).all<{ id: number; task_id: number; body: string; created_at: string }>(),
       d1.prepare(`SELECT tags.id, tags.name, tags.shortcut, assigned.task_id FROM personal_tags AS tags JOIN personal_task_tags AS assigned ON assigned.tag_id = tags.id JOIN tasks ON tasks.id = assigned.task_id WHERE tasks.archived = ? ORDER BY ${tagOrderClause("tags")}`).bind(archived).all<TaskTag & { task_id: number }>(),
+      areaTaskRows(d1),
     ]);
+    const areas = resolvedTaskAreas(areaRows);
     return Response.json({ tasks: (tasks.results ?? []).map((row) => ({
       id: row.id, jiraKey: row.jira_key, jiraUrl: row.jira_url, title: row.title, priority: row.priority,
       status: row.status, source: row.source, state: row.jira_status, jiraPriority: row.jira_priority,
@@ -38,6 +42,7 @@ export async function GET(request: Request) {
       dueDate: row.jira_due_date, labels: JSON.parse(row.jira_labels || "[]"), jiraUpdatedAt: row.jira_updated_at,
       syncStatus: row.jira_sync_status || "synced", syncError: row.jira_sync_error || "",
       isSubtask: Boolean(row.jira_is_subtask),
+      areaId: areas.get(row.id) || null,
       tags: tags.results.filter((tag) => tag.task_id === row.id).map(({ id, name, shortcut }) => ({ id, name, shortcut })),
       comments: JSON.parse(row.jira_comments || "[]"),
       manualOrder: row.manual_order, archived: Boolean(row.archived), completedAt: row.completed_at,
@@ -52,6 +57,7 @@ export async function POST(request: Request) {
     assertLocalMutation(request);
     const payload = await request.json();
     const d1 = await ensureTaskSchema();
+    const areaId = await requireArea(payload.areaId ?? null, d1);
     const tagIds = parseTagIds(payload.tagIds || []);
     const knownTags = await listTags(d1);
     if (tagIds.some((id) => !knownTags.some((tag) => tag.id === id))) return Response.json({ error: "A selected tag no longer exists." }, { status: 400 });
@@ -65,6 +71,10 @@ export async function POST(request: Request) {
       const assignments = [...(payload.notes === undefined ? [] : ["notes = ?"]), ...(reminder.sql ? [reminder.sql] : [])];
       if (id && assignments.length) await d1.prepare(`UPDATE tasks SET ${assignments.join(", ")} WHERE id = ?`)
         .bind(...(payload.notes === undefined ? [] : [cleanText(payload.notes, 8000)]), ...reminder.params, id).run();
+      if (id && !(result.issue as { fields?: { parent?: { key?: string } } } | undefined)?.fields?.parent?.key) {
+        const assignment = initialTaskAreaStatement(id, areaId);
+        await d1.prepare(assignment.sql).bind(...assignment.params).run();
+      }
       if (id && tagIds.length) await d1.batch(tagIds.map((tagId) => { const change = taskTagAssignment(id!, tagId, true); return d1.prepare(change.sql).bind(...change.params); }));
     } catch {
       warning = `${warning} The task is saved in the sync queue, but its local details could not be cached. Refresh before submitting again.`.trim();
