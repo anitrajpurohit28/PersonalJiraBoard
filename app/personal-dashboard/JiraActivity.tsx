@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { adfText, MAX_ATTACHMENT_BYTES } from "../../lib/jira-fields.mjs";
 import type { Task } from "../../lib/task-types";
+import { LinkedText, DraftLinks } from "./LinkedText";
 import { requestJson } from "./api";
 import { JiraTaskLink, WebJiraLink } from "./JiraTaskLink";
 
@@ -73,7 +74,7 @@ export function JiraActivity({ task, tasks, onChanged, onOpenTask, afterComments
     {!data.cached ? <p className="muted">Existing Jira comments have not been cached yet.</p> : null}
     {data.comments.map((entry) => <article className="comment-entry" key={entry.id}>
       <small>{entry.author?.displayName || "You"}{entry.created ? ` · ${new Date(entry.created).toLocaleString()}` : ""}{entry.pending ? " · Pending sync" : ""}</small>
-      <p>{adfText(entry.body).trimEnd()}</p>
+      <p><LinkedText text={adfText(entry.body).trimEnd()} /></p>
       {entry.author?.accountId === data.accountId ? <div className="item-actions"><button type="button" disabled={busy} onClick={() => { setEditing(entry.id); setComment(adfText(entry.body).trimEnd()); }}>Edit comment</button><button type="button" className="danger" disabled={busy} onClick={() => { if (window.confirm("Delete this Jira comment? If offline, it will be deleted when syncing resumes.")) void mutate("comment-delete", { commentId: entry.id, confirmDelete: true }); }}>Delete comment</button></div> : null}
     </article>)}
     {!data.comments.length && data.cached ? <p className="muted">No comments.</p> : null}
@@ -81,7 +82,7 @@ export function JiraActivity({ task, tasks, onChanged, onOpenTask, afterComments
       if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
       event.preventDefault();
       if (comment.trim() && !saving.current) event.currentTarget.form?.requestSubmit();
-    }} /></label><small id={commentHelpId}>Enter to save · Shift+Enter for a new line</small><div className="item-actions">{editing ? <button type="button" disabled={busy} onClick={() => { setEditing(null); setComment(""); }}>Cancel edit</button> : null}<button disabled={busy || !comment.trim()}>{editing ? "Save comment" : "Add comment"}</button></div></form>
+    }} /></label><DraftLinks text={comment} /><small id={commentHelpId}>Enter to save · Shift+Enter for a new line</small><div className="item-actions">{editing ? <button type="button" disabled={busy} onClick={() => { setEditing(null); setComment(""); }}>Cancel edit</button> : null}<button disabled={busy || !comment.trim()}>{editing ? "Save comment" : "Add comment"}</button></div></form>
   </section>
   {afterComments}
   <section className="activity-section" aria-label="Linked tasks">

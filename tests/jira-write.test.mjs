@@ -145,3 +145,14 @@ test("wrong email, out-of-board writes, invalid required fields and invalid date
   assert.throws(() => prepareFields(baseFields, { project: "bad" }, accountId), /supplied options/);
   assert.equal(adfText(toAdf("A\nB")).trimEnd(), "A\nB");
 });
+
+
+test("direct Jira subtask creation defaults to the parent's current priority with an optional override", async () => {
+  const fixture = jiraFixture(), jira = await fixture.makeClient().initialise();
+  fixture.issues.get("KAN-1").fields.priority = { id: "2", name: "High" };
+  const create = (fields) => jira.create({ ...createRequest({ parent: "KAN-1", ...fields }), issueTypeId: "subtask" });
+  const inherited = await create({});
+  assert.equal(inherited.issue.fields.priority.name, "High");
+  const overridden = await create({ priority: "3" });
+  assert.equal(overridden.issue.fields.priority.name, "Medium");
+});

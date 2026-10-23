@@ -451,3 +451,27 @@ test("workflow changes invalidate cached transitions while fresh permissions and
   assert.equal(offline.transitions[0].id, "to-30");
   assert.deepEqual(offline.transitions[0].fields, [required]);
 });
+
+
+test("subtasks inherit queued parent priority offline, preserve overrides and sync after restart", async () => {
+  const { fixture, workspace } = await setup();
+  await workspace.update("KAN-1", { fields: { priority: "2" } });
+  const context = await workspace.createContext({ parentKey: "KAN-1" });
+  assert.equal(context.fields.find((field) => field.fieldId === "priority").defaultValue.id, "2");
+  assert.equal((await workspace.createContext({ projectId: "10001" })).fields.find((field) => field.fieldId === "priority").defaultValue.id, "3", "Parent defaults must not leak into other tasks");
+  const child = await workspace.create(payload("Inherited child", { parentKey: "KAN-1" }));
+  assert.equal(child.issue.fields.priority.name, "High");
+  const explicit = await workspace.create(payload("Override child", { parentKey: "KAN-1", fields: { summary: "Override child", priority: "3" } }));
+  assert.equal(explicit.issue.fields.priority.name, "Medium");
+  const batch = await workspace.create(payload("New high parent", { fields: { summary: "New high parent", priority: "2" }, subtasks: [payload("Batch inherited"), payload("Batch override", { fields: { summary: "Batch override", priority: "3" } })] }));
+  const children = workspace.children(batch.key).map((row) => workspace.viewIssue(row.key));
+  assert.deepEqual(children.map((row) => row.fields.priority.name), ["High", "Medium"]);
+  // Later parent changes do not retroactively overwrite a child's chosen priority.
+  await workspace.update("KAN-1", { fields: { priority: "3" } });
+  const restarted = fixture.makeWorkspace(); await restarted.load();
+  await restarted.synchronize(await fixture.makeClient().initialise());
+  assert.equal(restarted.queueSummary().pending, 0);
+  assert.equal(fixture.issues.get(restarted.resolve(child.key)).fields.priority.name, "High");
+  assert.equal(fixture.issues.get(restarted.resolve(explicit.key)).fields.priority.name, "Medium");
+  assert.deepEqual(children.map((row) => fixture.issues.get(restarted.resolve(row.key)).fields.priority.name), ["High", "Medium"]);
+});

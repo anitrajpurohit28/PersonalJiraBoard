@@ -1,6 +1,6 @@
 # Personal Jira Board
 
-A small local dashboard for your Jira tasks. Create tasks and subtasks, add comments, attach files, link issues, and select multiple tasks to mark Done or delete. Tasks are assigned to you automatically, with Medium priority selected by default. No AI service or browser extension is required.
+A small local dashboard for your Jira tasks. Create tasks and subtasks, add comments, attach files, link issues, and select multiple tasks to mark Done or delete. Tasks are assigned to you automatically. New parent tasks default to Medium priority; new subtasks inherit their parent’s priority, which you can override. No AI service or browser extension is required.
 
 ## Configuration
 
@@ -21,25 +21,29 @@ Put your [Jira API token](https://id.atlassian.com/manage-profile/security/api-t
 }
 ```
 
-Only the configured email can connect. The project, issue types, columns, priorities and required fields come from Jira. Ordinary and scoped API tokens are supported; your account and token must have permission for the actions you use. `JIRA_API_TOKEN` can also be supplied in the process environment.
+The header shows **PersonalJiraBoard** with your verified Jira login email underneath. Before connection details load, it uses the email from `config/app.json`; the header contains no fixed personal email or board name. Only the configured email can connect. The project, issue types, columns, priorities and required fields come from Jira. Ordinary and scoped API tokens are supported; your account and token must have permission for the actions you use. `JIRA_API_TOKEN` can also be supplied in the process environment.
 
 ## Areas
 
-Use the switcher beside **My tasks** to work in one Area at a time. Create and rename your own Areas with **+ Area**, for example Work, Personal and Learn. Existing tasks start in **Unassigned**. New tasks default to the selected Area.
+Use the switcher beside **PersonalJiraBoard** to work in one Area at a time. Create and rename your own Areas with **+ Area**, for example Work, Personal and Learn. Existing tasks start in **Unassigned**. New tasks default to the selected Area.
 
-Change **Area** in task details, or select tasks and use **Move to area…** for a bulk move. Subtasks inherit their parent's Area and move with it. Active, Done, search, tag filters, reminders and overdue lists are limited to the selected Area. The selected Area is remembered on this device. Removing an Area returns its tasks to Unassigned without deleting them.
+Change **Area** in task details, or select tasks and use **Move to area…** for a bulk move. Subtasks inherit their parent's Area and move with it. Active, Done, search, tag filters, reminders and overdue lists are limited to the selected Area. The selected Area is remembered on this device. To delete an Area, open **+ Area**, choose **Remove** beside its name and confirm. Its tasks return to Unassigned without being deleted.
+
+Area tabs and column backgrounds use soft color tints: Work is blue, Learn is green and Personal is grey. Other names get a consistent color automatically. Optional `areaColors` in `config/ui.json` maps Area names to `blue`, `green`, `grey`, `purple`, `amber`, `teal` or `rose`. These tints keep task priority and reminder colors visible.
 
 Areas are private local organization, work offline, and survive Jira synchronization. They do not change Jira projects, boards or labels.
 
 ## Board and task details
 
-Priorities are High, Medium and Low, with red, blue and gray card tints. Existing Jira Highest/Lowest values appear as High/Low; viewing them does not change the Jira issue. The two most recent cached Jira comments appear on each card. Subtasks sit inside their parent card and open separately when clicked. Completed subtasks stay crossed out in Active until their parent is marked Done; then the whole group moves to Done. Selecting a parent does not select its subtasks; each entry has its own bulk-selection checkbox.
+Priorities are High, Medium and Low, with red, blue and gray card tints. Existing Jira Highest/Lowest values appear as High/Low; viewing them does not change the Jira issue. Pasted HTTP/HTTPS and www links are clickable in descriptions, comments and recent comment previews. Use Edit description to change its text; changes still auto-save. Links are also available below the text while typing and sync to Jira as links. The two most recent cached Jira comments appear on each card. Subtasks sit inside their parent card and open separately when clicked. Completed subtasks stay crossed out in Active until their parent is marked Done; then the whole group moves to Done. Selecting a parent does not select its subtasks; each entry has its own bulk-selection checkbox.
 
 Each task and subtask shows a circular count of full days since creation: green under 7 days, amber from 7–20 days, red after 20 days. Hover for the creation date. Jira tasks use their original Jira creation date; local tasks use their local creation date. If a legacy Jira creation date is unavailable, the tooltip identifies the first-tracked date used instead. **Days** sorts oldest first using the same timestamps. The indicators also work offline.
 
 Priority sorts each column High → Medium → Low, with oldest-created tasks first within each priority. Due dates and reminders do not override Priority. Days sorting puts overdue tasks and fired reminders first, then oldest-created tasks. Due dates become overdue after the local due day ends; completed tasks do not become overdue.
 
 Click a card's **Subtasks** header to collapse or expand its children. **Collapse all subtasks / Expand all subtasks** applies to the displayed cards. These choices are remembered on this device and do not change selection, task order or Jira data.
+
+Use the **Dark / Light** button immediately before **Reminders** to switch themes. Your choice is remembered on this device and restored when you reopen the app. The initial theme can be set with `"theme": "light"` or `"theme": "dark"` in `config/ui.json`. Both themes retain Area tints, task priorities and reminder highlights.
 
 Click a card to open its details. Use **Details: Right / Center**, or the layout button inside task details, to choose a side panel or centered popup. The choice is remembered on this device. Set the initial layout separately in `config/ui.json`:
 
@@ -51,7 +55,7 @@ Click a card to open its details. Use **Details: Right / Center**, or the layout
 
 The same `config/ui.json` can set `statusOrder` (Inbox, Now, Parked, Almost Done, Done) and `priorityOrder` (Low, Medium, High). Task buttons and board controls follow these display orders; additional Jira statuses stay available after the listed ones.
 
-Use `"center"` for a centered default. This display preference does not change the account configuration or its saved tasks. The compact toolbar keeps Active/Done and sorting stacked vertically, Jira connection controls in one vertical group, and priorities in a horizontal row. Tag filters sit between the compact search field and the sorting and connection controls, in your chosen tag order, with two tags stacked in each column. Select multiple tags to show tasks matching any selected tag; click All to clear the selection. The selected count and checkmarks show which filters are active. Tag columns wrap on smaller screens. Jira workflow states are shown by board columns. Task status and task priority use click buttons. Existing task edits save automatically after a short pause, and clicking outside, closing the popup or opening a subtask saves pending changes first. The popup stays open if required fields or saving need attention. The open task is highlighted on the board. Reminder follows Comments. Attachments sits at the bottom immediately above Due date, followed by the final **Delete task** action. Main task Jira IDs use a larger font than the IDs within nested subtasks.
+Use `"center"` for a centered default. This display preference does not change the account configuration or its saved tasks. The compact toolbar keeps Active/Done and sorting stacked vertically, Jira connection controls in one vertical group, and priorities in a horizontal row. Tag filters sit between the compact search field and the sorting and connection controls, in your chosen tag order, with two tags stacked in each column. Select multiple tags to show tasks that have every selected tag (AND). For example, Work and SmallTask show only items with both tags. Each task or subtask must have all selected tags itself; parent cards may remain for context, and unrelated subtasks are hidden. Click All to clear the selection. The selected count and checkmarks show which filters are active. Tag columns wrap on smaller screens. Jira workflow states are shown by board columns. Task status and task priority use click buttons. Existing task edits save automatically after a short pause, and clicking outside, closing the popup or opening a subtask saves pending changes first. The popup stays open if required fields or saving need attention. The open task is highlighted on the board. Reminder follows Comments. Attachments sits at the bottom immediately above Due date, followed by the final **Delete task** action. Main task Jira IDs use a larger font than the IDs within nested subtasks.
 
 Search matches independent words across task keys, titles, descriptions, labels, previously saved notes and updates, cached Jira comments and subtasks. A matching subtask brings up its parent card. Search uses the current Active/Done/Reminders/Overdue view and filters. **Reminders** clears the current filters and shows all entries with a reminder set, using the selected sort and their parent context. **Overdue** clears the current filters and lists unfinished tasks and subtasks whose due date is before today, with a total count on the button. Tasks due today, completed tasks and reminders without an overdue due date are excluded. Both views work with cached tasks offline. Notification permission is a separate button in Reminders. Supported examples:
 

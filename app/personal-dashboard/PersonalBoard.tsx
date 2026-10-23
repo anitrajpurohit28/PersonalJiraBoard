@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { settings, storageNamespace } from "../../config/settings.mjs";
-import { orderNamedOptions, uiSettings } from "../../config/ui-settings.mjs";
+import { areaColor, orderNamedOptions, uiSettings } from "../../config/ui-settings.mjs";
 import { COLUMNS, PRIORITY_OPTIONS, type Priority, type Status, type Task, type JiraSession } from "../../lib/task-types";
 import { JiraConnection, JiraTaskEditor } from "./JiraTaskEditor";
 import { TaskModal as Modal, localDateTime } from "./TaskModal";
@@ -21,6 +21,7 @@ import { ReminderField } from "./ReminderField";
 import { TaskTags } from "./TaskTags";
 import { TagManager } from "./TagManager";
 import { TagFilters } from "./TagFilters";
+import { ThemeToggle } from "./ThemeToggle";
 import { AreaSwitcher } from "./AreaSwitcher";
 import { AreaManager } from "./AreaManager";
 import { TaskArea } from "./TaskArea";
@@ -167,7 +168,7 @@ export default function PersonalBoard() {
   const displayTask = (group: TaskGroup) => group.parent || group.matches[0];
   const groups = sortTaskGroups(filterTaskGroups(groupBoardTasks(tasks), { view, source, priority, state: "all", query, tagIds, areaId }), sort);
   const collapseKey = (group: TaskGroup) => group.parent ? String(group.parent.id) : group.key;
-  const collapsibleGroups = groups.filter((group) => group.children.length);
+  const collapsibleGroups = groups.filter((group) => group.children.some((child) => !tagIds.length || group.matches.some((match) => match.id === child.id)));
   const allSubtasksCollapsed = collapsibleGroups.length > 0 && collapsibleGroups.every((group) => collapsedSubtasks.has(collapseKey(group)));
   const visible = groups.flatMap((group) => group.matches);
   const checkedVisible = visible.filter((task) => checked.has(task.id));
@@ -330,10 +331,14 @@ export default function PersonalBoard() {
   }
 
   return (
-    <main className="personal-app">
+    <main className="personal-app" data-area-color={areaColor(areaId ? currentAreaName : null)}>
       <header className="app-header">
-        <div className="board-heading"><h1>My tasks</h1><AreaSwitcher areas={areas} value={areaId} onChange={chooseArea} onManage={() => setShowAreas(true)} /><p>{session?.metadata?.boardName ? `${session.metadata.boardName} · ` : ""}{settings.email}</p></div>
+        <div className="board-heading">
+          <div className="board-identity"><h1>PersonalJiraBoard</h1><p className="board-account">{session?.account || settings.email}</p></div>
+          <AreaSwitcher areas={areas} value={areaId} onChange={chooseArea} onManage={() => setShowAreas(true)} />
+        </div>
         <div className="header-actions">
+          <ThemeToggle />
           <button aria-pressed={view === "reminders"} onClick={() => { resetFilters(); setView(view === "reminders" ? "active" : "reminders"); }} title="Show tasks with a reminder in this area">Reminders ({reminderCount})</button>
           <button aria-pressed={view === "overdue"} onClick={() => { resetFilters(); setView(view === "overdue" ? "active" : "overdue"); }} title="Show overdue tasks in this area">Overdue ({overdueCount})</button>
           <button onClick={() => setShowTags(true)}>Tags</button>
@@ -386,10 +391,10 @@ export default function PersonalBoard() {
         const rows = groups.filter((group) => inColumn(group, column));
         return <section className="task-column" key={column.id} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); void drop(column); }}>
           <h2>{column.label}<span>{rows.length}</span></h2>
-          {rows.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={toggleTagFilter} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} onSubtaskDrop={(before) => { if (!group.parent || tasks.find((task) => task.id === draggingId)?.parentKey !== group.parent.jiraKey) return false; void dropSubtask(group.parent.jiraKey, before); return true; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void drop(column, group.parent?.id); }} />)}
+          {rows.map((group) => <TaskGroupCard key={group.key} group={group} filterSubtasks={tagIds.length > 0} onTagFilter={toggleTagFilter} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} onDragStart={setDraggingId} onDragEnd={() => setDraggingId(null)} onSubtaskDrop={(before) => { if (!group.parent || tasks.find((task) => task.id === draggingId)?.parentKey !== group.parent.jiraKey) return false; void dropSubtask(group.parent.jiraKey, before); return true; }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void drop(column, group.parent?.id); }} />)}
           {!rows.length ? <p className="column-empty">No tasks</p> : null}
         </section>;
-      })}</section> : <section className="done-list" aria-label={view === "overdue" ? "Overdue tasks" : view === "reminders" ? "Tasks with reminders" : "Completed tasks"}>{groups.map((group) => <TaskGroupCard key={group.key} group={group} onTagFilter={toggleTagFilter} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} />)}</section>}
+      })}</section> : <section className="done-list" aria-label={view === "overdue" ? "Overdue tasks" : view === "reminders" ? "Tasks with reminders" : "Completed tasks"}>{groups.map((group) => <TaskGroupCard key={group.key} group={group} filterSubtasks={tagIds.length > 0} onTagFilter={toggleTagFilter} subtasksCollapsed={collapsedSubtasks.has(collapseKey(group))} onToggleSubtasks={() => setSubtasksCollapsed([collapseKey(group)], !collapsedSubtasks.has(collapseKey(group)))} checked={checked} selectedId={selectedId} disabled={busy} onToggle={toggle} onOpen={(id) => { setError(""); setSelectedId(id); }} onMove={(task) => void move(task, task.archived ? "restore" : "done")} />)}</section>}
 
       {showAreas ? <AreaManager areas={areas} onChanged={refresh} onClose={() => setShowAreas(false)} /> : null}
       {showTags ? <TagManager tags={tags} onChanged={tagsChanged} onClose={() => setShowTags(false)} /> : null}

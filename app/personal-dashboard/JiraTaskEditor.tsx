@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useId, type FormEvent } from "react";
 import { settings } from "../../config/settings.mjs";
 import { uiSettings } from "../../config/ui-settings.mjs";
-import { adfText, CORE_JIRA_FIELDS, jiraPriorityButtons } from "../../lib/jira-fields.mjs";
+import { adfText, CORE_JIRA_FIELDS, jiraPriorityButtons, inheritedPriority } from "../../lib/jira-fields.mjs";
 import type { JiraField, JiraEditorContext, JiraSession, Task } from "../../lib/task-types";
 import { TaskModal, localDateTime } from "./TaskModal";
 import { requestJson } from "./api";
@@ -19,6 +19,7 @@ import { TaskTags } from "./TaskTags";
 import type { TaskTag } from "../../lib/task-tags";
 import type { TaskArea as Area } from "../../lib/task-areas";
 import { TaskArea } from "./TaskArea";
+import { LinkedTextField } from "./LinkedText";
 import { cachedTaskEditor } from "../../lib/jira-editor-state";
 
 type Context = JiraEditorContext;
@@ -39,8 +40,12 @@ function normalizeValues(values: Record<string, unknown>, fields: JiraField[]) {
     return [key, field?.schema.type === "array" && field.schema.items === "string" && typeof value === "string" ? value.split(",").map((item) => item.trim()).filter(Boolean) : value];
   }));
 }
-function defaultValues(fields: JiraField[]) {
-  return Object.fromEntries(fields.filter((field) => !HIDDEN.includes(field.fieldId)).map((field) => [field.fieldId, initialValue(field, field.defaultValue)]));
+function defaultValues(fields: JiraField[], parentPriority?: unknown) {
+  const values = Object.fromEntries(fields.filter((field) => !HIDDEN.includes(field.fieldId)).map((field) => [field.fieldId, initialValue(field, field.defaultValue)]));
+  const priority = fields.find((field) => field.fieldId === "priority");
+  const inherited = priority && inheritedPriority(priority.allowedValues, parentPriority);
+  if (inherited) values.priority = inherited;
+  return values;
 }
 
 export function JiraFieldInput({ field, value, onChange, accountId, disabled, currentAssignee, formId, autoFocus = false }: {
@@ -63,7 +68,7 @@ export function JiraFieldInput({ field, value, onChange, accountId, disabled, cu
       {!multiple ? <option value="">{field.hasDefaultValue ? "Jira default" : "Choose…"}</option> : null}{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
     </select></label>;
   }
-  if (["description", "environment"].includes(field.fieldId) || field.schema.custom?.endsWith(":textarea")) return <label>{label}<textarea rows={4} maxLength={32000} required={required} disabled={disabled} value={String(value || "")} onChange={(event) => onChange(event.target.value)} /></label>;
+  if (["description", "environment"].includes(field.fieldId) || field.schema.custom?.endsWith(":textarea")) return <LinkedTextField label={label} value={String(value || "")} required={required} disabled={disabled} onChange={onChange} />;
   if (field.schema.type === "boolean") return <label><input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /> {label}</label>;
   const isNumber = ["number", "integer"].includes(field.schema.type || "");
   const type = field.schema.type === "date" || field.fieldId === "duedate" ? "date" : field.schema.type === "datetime" ? "datetime-local" : isNumber ? "number" : "text";
@@ -89,6 +94,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   const [values, setValues] = useState<Record<string, unknown>>(() => Object.fromEntries((cached?.fields || []).filter((field) => CORE.includes(field.fieldId)).map((field) => [field.fieldId, initialValue(field, cached?.issue?.fields[field.fieldId])])));
   const initial = useRef<Record<string, unknown>>(values);
   const rawInitial = useRef<Record<string, unknown>>(cached?.issue?.fields || {});
+  const priorityChosen = useRef(false);
   const dirty = useRef(false), loadedSelection = useRef("");
   const requestId = useRef(crypto.randomUUID());
   const created = useRef(false);
@@ -106,6 +112,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   const [subtaskTitles, setSubtaskTitles] = useState<Record<number, string>>({});
   const subtaskInitial = useRef<Record<number, string>>({});
   const taskKey = task?.jiraKey, parentKey = parentTask?.jiraKey;
+  const parentPriorityId = parentTask?.jiraPriorityId, parentPriorityName = parentTask?.jiraPriority;
 
   useEffect(() => {
     if (!available) return;
@@ -122,7 +129,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
           if (!next.project || !next.issueType || !next.projects || !next.issueTypes) throw new Error("Jira did not provide the fields needed to create this task. Try connecting again.");
           loadedSelection.current = `new:${next.project.id}:${next.issueType.id}:${parentKey || ""}`;
           setProject(next.project.id); setIssueType(next.issueType.id);
-          setValues((current) => ({ ...defaultValues(next.fields), ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== undefined)) }));
+          setValues((current) => ({ ...defaultValues(next.fields, parentKey ? { id: parentPriorityId, name: parentPriorityName } : undefined), ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== undefined)) }));
         } else {
           loadedSelection.current = selection;
           if (!dirty.current) {
@@ -148,7 +155,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [available, connected, taskKey, project, issueType, parentKey]);
+  }, [available, connected, taskKey, project, issueType, parentKey, parentPriorityId, parentPriorityName]);
 
   useEffect(() => {
     if (!context || !children.length || childContext?.project?.id === project) return;
@@ -241,13 +248,20 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
       {parentTask ? <p className="jira-context">Subtask of <JiraTaskLink jiraKey={parentTask.jiraKey} onOpen={() => void leave()} /> · <strong>{parentTask.title}</strong> <WebJiraLink jiraKey={parentTask.jiraKey} href={parentTask.jiraUrl} /></p> : null}
       {task ? <p className="jira-context issue-links"><JiraTaskLink jiraKey={task.jiraKey} onOpen={() => void leave(() => onOpenTask?.(task.id))} /><span>· {task.projectKey} · {task.issueType}</span><WebJiraLink jiraKey={task.jiraKey} href={task.jiraUrl} /></p> : null}
       {!context && task ? <p><strong>{task.title}</strong></p> : null}
-      <fieldset disabled={busy || loading || !available || Boolean(loadError)}>{fields.filter((field) => field.fieldId !== "duedate").map((field) => <JiraFieldInput key={field.fieldId} field={field} value={values[field.fieldId]} autoFocus={!task && field.fieldId === "summary"} accountId={context?.accountId || ""} disabled={busy || loading} onChange={(value) => { dirty.current = true; setValues((current) => ({ ...current, [field.fieldId]: value })); }} />)}
+      <fieldset disabled={busy || loading || !available || Boolean(loadError)}>{fields.filter((field) => field.fieldId !== "duedate").map((field) => <JiraFieldInput key={field.fieldId} field={field} value={values[field.fieldId]} autoFocus={!task && field.fieldId === "summary"} accountId={context?.accountId || ""} disabled={busy || loading} onChange={(value) => {
+        dirty.current = true;
+        if (field.fieldId === "priority") priorityChosen.current = true;
+        const parent = !task && field.fieldId === "parent" ? tasks.find((row) => row.jiraKey === value) : undefined;
+        const priorityField = context?.fields.find((entry) => entry.fieldId === "priority");
+        const inherited = parent && priorityField && !priorityChosen.current ? inheritedPriority(priorityField.allowedValues, { id: parent.jiraPriorityId, name: parent.jiraPriority }) : undefined;
+        setValues((current) => ({ ...current, [field.fieldId]: value, ...(inherited ? { priority: inherited } : {}) }));
+      }} />)}
       {task && context ? <WorkflowButtons options={[{ id: currentStatusId, name: currentStatus?.name || task.state || "Current" }, ...(context.transitions || []).map((entry) => ({ id: entry.to.id, name: entry.to.name }))]} value={target || currentStatusId} disabled={busy} onChange={(value) => { dirty.current = true; setTarget(value === currentStatusId ? "" : value); if (context.transitions?.find((entry) => entry.to.id === value)?.to.category === "done") setNotifyAt(""); setTransitionFields({}); }} /> : null}
       {requiredTransitionFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={transitionFields[field.fieldId]} accountId={context?.accountId || ""} disabled={busy} onChange={(value) => setTransitionFields((current) => ({ ...current, [field.fieldId]: value }))} />)}
       </fieldset>
       <TaskArea areas={areas} value={task ? task.areaId : isSubtask ? (parentTask || tasks.find((row) => row.jiraKey === values.parent))?.areaId || null : newAreaId} inherited={isSubtask} disabled={busy} onManage={onManageAreas} onChange={(id) => { if (task) onSetArea(task, id); else setNewAreaId(id); }} />
       <TaskTags tags={tags} selected={task ? (task.tags || []).map((tag) => tag.id) : newTagIds} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={task ? taggingId === task.id : busy} onChange={(id, assigned) => { if (task) onSetTaskTag(task, id, assigned); else if (!busy) setNewTagIds((current) => assigned ? [...new Set([...current, id])] : current.filter((item) => item !== id)); }} />
-      {!task && !isSubtask && context?.issueTypes?.some((type) => type.subtask) ? <section className="subtasks-section"><h3>Subtasks</h3>{children.map((child, index) => <fieldset className="subtask-draft" key={child.requestId} disabled={busy}><div className="section-heading"><strong>Subtask {index + 1}</strong><button type="button" className="danger" onClick={() => setChildren((current) => current.filter((entry) => entry.requestId !== child.requestId))}>Remove subtask</button></div>{childFields.length ? childFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={child.fields[field.fieldId]} autoFocus={field.fieldId === "summary"} accountId={context.accountId} disabled={busy} onChange={(value) => setChildren((current) => current.map((entry) => entry.requestId === child.requestId ? { ...entry, fields: { ...entry.fields, [field.fieldId]: value } } : entry))} />) : <p role="status">Loading subtask fields…</p>}</fieldset>)}<button type="button" disabled={busy || loading} onClick={() => setChildren((current) => [...current, { requestId: crypto.randomUUID(), fields: childContext ? defaultValues(childContext.fields) : {} }])}>+ Add subtask</button></section> : null}
+      {!task && !isSubtask && context?.issueTypes?.some((type) => type.subtask) ? <section className="subtasks-section"><h3>Subtasks</h3>{children.map((child, index) => <fieldset className="subtask-draft" key={child.requestId} disabled={busy}><div className="section-heading"><strong>Subtask {index + 1}</strong><button type="button" className="danger" onClick={() => setChildren((current) => current.filter((entry) => entry.requestId !== child.requestId))}>Remove subtask</button></div>{childFields.length ? childFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={child.fields[field.fieldId]} autoFocus={field.fieldId === "summary"} accountId={context.accountId} disabled={busy} onChange={(value) => setChildren((current) => current.map((entry) => entry.requestId === child.requestId ? { ...entry, fields: { ...entry.fields, [field.fieldId]: value } } : entry))} />) : <p role="status">Loading subtask fields…</p>}</fieldset>)}<button type="button" disabled={busy || loading} onClick={() => setChildren((current) => [...current, { requestId: crypto.randomUUID(), fields: { ...(childContext ? defaultValues(childContext.fields, values.priority) : {}), ...(values.priority ? { priority: values.priority } : {}) } }])}>+ Add subtask</button></section> : null}
       {!task ? reminderControl : null}
 
     </form>

@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import { configurationId } from "../config/settings.mjs";
 import { workspaceStore } from "./jira-store.mjs";
-import { adfText, comparableField, jiraError, MAX_ATTACHMENT_BYTES, personalFields, validLocalKey, validTaskKey, toAdf } from "../lib/jira-fields.mjs";
+import { adfText, inheritedPriority, comparableField, jiraError, MAX_ATTACHMENT_BYTES, personalFields, validLocalKey, validTaskKey, toAdf } from "../lib/jira-fields.mjs";
 
 const copy = (value) => structuredClone(value);
 const uuid = (value) => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
@@ -124,7 +124,13 @@ export class JiraWorkspace {
     const known = Object.values(this.state.createContexts).find((context) => context.project.id === projectId);
     const typeId = parent ? known?.issueTypes.find((type) => type.subtask)?.id : payload.issueTypeId || known?.issueTypes.find((type) => /^task$/i.test(type.name))?.id || known?.issueType.id;
     const cached = this.state.createContexts[`${projectId}:${typeId}`];
-    if (cached) return { ...copy(cached), offline: !client };
+    if (cached) {
+      const result = { ...copy(cached), offline: !client };
+      const priority = result.fields.find((field) => field.fieldId === "priority");
+      const inherited = priority && inheritedPriority(priority.allowedValues, parent?.fields.priority);
+      if (inherited) priority.defaultValue = { id: inherited };
+      return result;
+    }
     if (!client) throw jiraError("These Jira fields have not been cached. Connect Jira once to load them.", 503);
     const context = await client.createContext(projectId, typeId);
     this.state.createContexts[`${projectId}:${context.issueType.id}`] = context; await this.save(); return copy(context);
@@ -181,7 +187,7 @@ export class JiraWorkspace {
     if (!uuid(payload.requestId)) throw jiraError("A creation request ID is required.");
     const key = `local:${payload.requestId}`;
     const fieldsInput = { ...payload.fields, ...(parentKey ? { parent: parentKey } : {}) };
-    const { input, fields } = personalFields(context.fields, fieldsInput, this.profile.identity.accountId, { creating: true, subtask: context.issueType.subtask });
+    const { input, fields } = personalFields(context.fields, fieldsInput, this.profile.identity.accountId, { creating: true, subtask: context.issueType.subtask, parentPriority: this.viewIssue(parentKey || fieldsInput.parent?.key || fieldsInput.parent)?.fields.priority });
     if (fields.parent) {
       const parent = this.viewIssue(fields.parent.key);
       if (!parent || parent.fields.project?.id !== context.project.id || parent.fields.issuetype?.subtask) throw jiraError("Choose a parent task in this project.");

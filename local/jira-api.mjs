@@ -207,13 +207,14 @@ export class JiraApi {
     return this.exclusive(async () => {
       if (!/^[a-f0-9-]{36}$/i.test(payload.requestId || "")) throw jiraError("A creation request ID is required.");
       const context = await this.createContext(payload.projectId, payload.issueTypeId);
-      const { fields } = personalFields(context.fields, payload.fields, this.identity.accountId, { creating: true, subtask: context.issueType.subtask });
-      fields.project = { id: context.project.id };
-      fields.issuetype = { id: context.issueType.id };
+      let { fields } = personalFields(context.fields, payload.fields, this.identity.accountId, { creating: true, subtask: context.issueType.subtask });
       if (fields.parent) {
         const parent = await this.scopedIssue(fields.parent.key);
         if (String(parent.fields.project?.id) !== context.project.id || parent.fields.issuetype?.subtask) throw jiraError("Choose a parent task in the same project, rather than another subtask.");
+        fields = personalFields(context.fields, payload.fields, this.identity.accountId, { creating: true, subtask: context.issueType.subtask, parentPriority: parent.fields.priority }).fields;
       }
+      fields.project = { id: context.project.id };
+      fields.issuetype = { id: context.issueType.id };
       const signature = createHash("sha256").update(JSON.stringify(canonical(fields))).digest("hex");
       const receipt = this.created.get(payload.requestId) || await this.readReceipt(payload.requestId);
       if (receipt && receipt.signature !== signature) throw jiraError("This request ID has already been used. Reopen New task to create a different issue.", 409);

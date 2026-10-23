@@ -11,5 +11,12 @@
     "Low",
     "Medium",
     "High"
-  ]
+  ],
+  "areaColors": {
+    "Work": "blue",
+    "Learn": "green",
+    "Personal": "grey",
+    "Finance": "amber"
+  },
+  "theme": "light"
 }

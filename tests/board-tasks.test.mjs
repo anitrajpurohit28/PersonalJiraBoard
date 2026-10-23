@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { groupBoardTasks, filterTaskGroups, sortTaskGroups, orderSubtasks, taskAgeInDays, taskCreationTime, matchesTaskSearch, parseTaskSearch, isTaskOverdue } from "../lib/board-tasks.ts";
-import { validateUiSettings } from "../config/ui-settings.mjs";
+import { areaColor, validateUiSettings } from "../config/ui-settings.mjs";
 const task = (id, values = {}) => ({ id, jiraKey: `KAN-${id}`, title: `Task ${id}`, parentKey: null, isSubtask: false, archived: false, source: "jira", priority: 3, jiraPriority: "Medium", description: "", notes: "", updates: [], comments: [], labels: [], state: "In Progress", status: "now", syncStatus: "synced", ...values });
 const filters = (values = {}) => ({ view: "active", source: "all", priority: "all", state: "all", query: "", ...values });
 
@@ -123,8 +123,25 @@ test("parent display does not silently select children excluded by priority and 
 test("display layout configuration accepts right or center without changing account configuration", () => {
   assert.equal(validateUiSettings({ taskDetailsPosition: "right" }).taskDetailsPosition, "right");
   assert.equal(validateUiSettings({ taskDetailsPosition: "center" }).taskDetailsPosition, "center");
+  assert.equal(validateUiSettings({ taskDetailsPosition: "right" }).theme, "light");
+  assert.equal(validateUiSettings({ taskDetailsPosition: "right", theme: "dark" }).theme, "dark");
+  assert.throws(() => validateUiSettings({ taskDetailsPosition: "right", theme: "auto" }));
   assert.throws(() => validateUiSettings({ taskDetailsPosition: "bottom" }));
   assert.throws(() => validateUiSettings({ taskDetailsPosition: "right", apiToken: "wrong-file" }));
+});
+
+test("Area tints follow the configured names and stay consistent for user-defined areas", () => {
+  assert.equal(areaColor("Work"), "blue");
+  assert.equal(areaColor(" learn "), "green");
+  assert.equal(areaColor("PERSONAL"), "grey");
+  assert.equal(areaColor(null), "neutral");
+  assert.equal(areaColor("New Area"), areaColor("new   area"));
+  const config = validateUiSettings({ taskDetailsPosition: "right", areaColors: { " Custom ": "purple", Work: "teal" } });
+  assert.equal(areaColor("CUSTOM", config.areaColors), "purple");
+  assert.equal(areaColor("work", config.areaColors), "teal");
+  for (const areaColors of [[], "blue", { Work: "invalid" }, { " ": "blue" }, { Work: "blue", work: "green" }]) {
+    assert.throws(() => validateUiSettings({ taskDetailsPosition: "right", areaColors }));
+  }
 });
 
 const sortedGroups = (rows, sort, view = "active", today = "2026-10-18") => sortTaskGroups(filterTaskGroups(groupBoardTasks(rows), filters({ view }), today), sort, today);
@@ -342,8 +359,8 @@ test("private tags are searchable separately from Jira labels and filter matchin
 });
 
 
-test("multiple tag filters match any selected tag without duplicating tasks or selecting unrelated siblings", () => {
-  const work = { id: "work", name: "Work", shortcut: "w" }, finance = { id: "finance", name: "Finance", shortcut: "f" };
+test("multiple tag filters require every selected tag on the same item, including missing, extra and duplicate tags", () => {
+  const work = { id: "work", name: "Work", shortcut: "w" }, finance = { id: "finance", name: "Finance", shortcut: "f" }, small = { id: "small", name: "SmallTask" };
   const rows = [
     task(1, { tags: [work] }),
     task(2, { parentKey: "KAN-1", tags: [finance] }),
@@ -351,14 +368,17 @@ test("multiple tag filters match any selected tag without duplicating tasks or s
     task(4, { tags: [finance] }),
     task(5, { tags: [work, finance] }),
     task(6),
+    task(7, { tags: [work, finance, small] }),
   ];
   const original = structuredClone(rows), groups = groupBoardTasks(rows);
   const matching = (tagIds) => filterTaskGroups(groups, filters({ tagIds })).flatMap((group) => group.matches.map((row) => row.id));
-  assert.deepEqual(matching(["work", "finance"]), [1, 2, 4, 5]);
-  assert.deepEqual(matching(["work", "finance", "work"]), [1, 2, 4, 5]);
-  assert.deepEqual(matching(["finance"]), [2, 4, 5]);
-  assert.deepEqual(matching(["work"]), [1, 5]);
-  assert.deepEqual(matching([]), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(matching(["work", "finance"]), [5, 7]);
+  assert.deepEqual(matching(["work", "finance", "work"]), [5, 7]);
+  assert.deepEqual(matching(["finance"]), [2, 4, 5, 7]);
+  assert.deepEqual(matching(["work"]), [1, 5, 7]);
+  assert.deepEqual(matching([]), [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(matching(["work", "finance", "small"]), [7]);
+  assert.deepEqual(matching(["work", "missing"]), []);
   assert.deepEqual(rows, original);
 });
 
@@ -366,9 +386,10 @@ test("multiple tags combine with search, priority and attention views while reta
   const work = { id: "work", name: "Work" }, personal = { id: "personal", name: "Personal" };
   const groups = groupBoardTasks([
     task(1, { title: "Release checklist", tags: [work], dueDate: "2026-11-01" }),
-    task(2, { parentKey: "KAN-1", title: "Pay invoice", tags: [personal], priority: 2, dueDate: "2026-10-15", notifyAt: "2026-10-16T10:00:00Z" }),
+    task(2, { parentKey: "KAN-1", title: "Pay invoice", tags: [work, personal], priority: 2, dueDate: "2026-10-15", notifyAt: "2026-10-16T10:00:00Z" }),
     task(3, { parentKey: "KAN-1", tags: [work] }),
-    task(4, { title: "Archived", tags: [personal], archived: true, dueDate: "2026-10-15", notifyAt: "2026-10-16T10:00:00Z" }),
+    task(4, { title: "Archived", tags: [work, personal], archived: true, dueDate: "2026-10-15", notifyAt: "2026-10-16T10:00:00Z" }),
+    task(5, { title: "Archived partial match", tags: [personal], archived: true }),
   ]);
   for (const view of ["active", "overdue", "reminders"]) {
     const result = filterTaskGroups(groups, filters({ view, tagIds: ["work", "personal"], query: "release invoice", priority: "high" }), "2026-10-19");

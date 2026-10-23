@@ -18,6 +18,6 @@ export function TagFilters({ tags, selected, onToggle, onClear }: { tags: TaskTa
         </button>)}
       </div>)}
     </div>
-    <span className="sr-only" id={helpId}>Show tasks matching any selected tag. Select multiple tags, or All to clear the tag filters.</span>
+    <span className="sr-only" id={helpId}>Show tasks that have every selected tag. All selected tags must be on the same task or subtask. Select All to clear the tag filters.</span>
   </section>;
 }
