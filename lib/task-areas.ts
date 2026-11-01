@@ -1,15 +1,17 @@
-export type TaskArea = { id: string; name: string };
+export type TaskArea = { id: string; name: string; disabled?: boolean };
+export type AreaSyncInfo = { managed: boolean; ready: boolean; message: string };
 export type AreaTask = { id: number; jiraKey: string; parentKey: string | null; areaId: string | null };
 export const personalAreaSchema = [
   `CREATE TABLE IF NOT EXISTS personal_areas (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
-    sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    sort_order INTEGER NOT NULL DEFAULT 0, jira_field_id TEXT, jira_option_id TEXT, disabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
   `CREATE TABLE IF NOT EXISTS personal_task_areas (
     task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
     area_id TEXT REFERENCES personal_areas(id) ON DELETE SET NULL
   )`,
   "CREATE INDEX IF NOT EXISTS personal_task_areas_area_idx ON personal_task_areas (area_id)",
+  "CREATE TABLE IF NOT EXISTS jira_area_sync_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, field_id TEXT)",
 ];
 const invalid = (message: string, status = 400) => Object.assign(new Error(message), { status });
 export function parseArea(value: unknown) {

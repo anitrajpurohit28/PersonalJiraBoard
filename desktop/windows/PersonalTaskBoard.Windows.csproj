@@ -9,7 +9,7 @@
     <RootNamespace>PersonalTaskBoard.Windows</RootNamespace>
     <ApplicationIcon>PersonalTaskBoard.ico</ApplicationIcon>
     <Version>1.1.0</Version>
-    <Authors>Service Engineering</Authors>
+    <Product>Personal Jira Board</Product>
     <Description>PersonalTaskBoard native Windows launcher</Description>
   </PropertyGroup>
 
@@ -17,4 +17,10 @@
     <!-- WebView2 is the supported Chromium-based Windows desktop web view. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
   </ItemGroup>
+  <!-- The WebView2 package adds both UI frameworks; this app only uses WinForms. -->
+  <Target Name="RemoveUnusedWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
 </Project>

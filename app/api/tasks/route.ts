@@ -4,9 +4,13 @@ import { reminderEdit } from "../../../lib/task-reminders";
 import { cacheJiraResult } from "../../../lib/jira-result";
 import { assertLocalMutation, errorResponse } from "../../../lib/local-request";
 import { parseTagIds, taskTagAssignment, tagOrderClause, type TaskTag } from "../../../lib/task-tags";
+import { initializeJiraTags } from "../../../lib/jira-tag-sync";
+import { storedTags } from "../../../db/jira-tags";
 import { listTags } from "../../../db/tags";
 import { areaTaskRows, requireArea } from "../../../db/areas";
 import { resolvedTaskAreas, initialTaskAreaStatement } from "../../../lib/task-areas";
+import { initializeJiraAreas } from "../../../lib/jira-area-sync";
+import { storedAreas } from "../../../db/jira-areas";
 import { validLocalKey } from "../../../lib/jira-fields.mjs";
 
 type TaskRow = {
@@ -57,11 +61,19 @@ export async function POST(request: Request) {
     assertLocalMutation(request);
     const payload = await request.json();
     const d1 = await ensureTaskSchema();
+    const areaState = await initializeJiraAreas();
+    if (areaState.result.areasMigrated && !areaState.sync.ready) return Response.json({ error: areaState.sync.message }, { status: 400 });
     const areaId = await requireArea(payload.areaId ?? null, d1);
+    const selectedArea = areaId ? (await storedAreas(d1)).find((area) => area.id === areaId) : null;
+    if (areaState.result.areasMigrated && selectedArea?.disabled) return Response.json({ error: "Choose an available Area from Jira." }, { status: 400 });
     const tagIds = parseTagIds(payload.tagIds || []);
+    await initializeJiraTags();
     const knownTags = await listTags(d1);
     if (tagIds.some((id) => !knownTags.some((tag) => tag.id === id))) return Response.json({ error: "A selected tag no longer exists." }, { status: 400 });
-    const result = await requestJiraHelper("create", "POST", { requestId: payload.requestId, projectId: payload.projectId, issueTypeId: payload.issueTypeId, fields: payload.fields, parentKey: payload.parentKey, subtasks: payload.subtasks });
+    const selectedTags = (await storedTags(d1)).filter((tag) => tagIds.includes(tag.id));
+    if (payload.tagIds !== undefined && payload.fields?.labels !== undefined && !Array.isArray(payload.fields.labels)) return Response.json({ error: "Labels must be a list." }, { status: 400 });
+    const fields = { ...payload.fields, ...(payload.tagIds !== undefined ? { labels: [...new Set([...(payload.fields?.labels || []), ...selectedTags.map((tag) => tag.jira_label!)])] } : {}) };
+    const result = await requestJiraHelper("create", "POST", { requestId: payload.requestId, projectId: payload.projectId, issueTypeId: payload.issueTypeId, fields, areaOptionId: selectedArea?.jira_option_id || null, parentKey: payload.parentKey, subtasks: payload.subtasks });
     let warning = typeof result.warning === "string" ? result.warning : "";
     let id: number | undefined;
     try {
@@ -71,7 +83,7 @@ export async function POST(request: Request) {
       const assignments = [...(payload.notes === undefined ? [] : ["notes = ?"]), ...(reminder.sql ? [reminder.sql] : [])];
       if (id && assignments.length) await d1.prepare(`UPDATE tasks SET ${assignments.join(", ")} WHERE id = ?`)
         .bind(...(payload.notes === undefined ? [] : [cleanText(payload.notes, 8000)]), ...reminder.params, id).run();
-      if (id && !(result.issue as { fields?: { parent?: { key?: string } } } | undefined)?.fields?.parent?.key) {
+      if (!areaState.result.areasMigrated && id && !(result.issue as { fields?: { parent?: { key?: string } } } | undefined)?.fields?.parent?.key) {
         const assignment = initialTaskAreaStatement(id, areaId);
         await d1.prepare(assignment.sql).bind(...assignment.params).run();
       }

@@ -1,4 +1,6 @@
+import { emptyTagCatalog, readTagCatalog, changeTagCatalog, cloudTag, jiraTagLabel, applyLabelDelta, labelDelta } from "../lib/jira-tags.mjs";
 import { randomUUID, createHash } from "node:crypto";
+import { readAreaCatalog, areaNameKey, areaOptionId, issueAreaGroups } from "../lib/jira-areas.mjs";
 import { configurationId } from "../config/settings.mjs";
 import { workspaceStore } from "./jira-store.mjs";
 import { adfText, inheritedPriority, comparableField, jiraError, MAX_ATTACHMENT_BYTES, personalFields, validLocalKey, validTaskKey, toAdf } from "../lib/jira-fields.mjs";
@@ -7,13 +9,13 @@ const copy = (value) => structuredClone(value);
 const uuid = (value) => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const retryable = (error) => error.retryable || error.status >= 500 || error.status === 429;
-const freshState = () => ({ version: 1, configId: configurationId, revision: 1, profile: null, issues: {}, createContexts: {}, editContexts: {}, details: {}, queue: [], aliases: {}, itemAliases: {}, deletedKeys: [], recentCreates: {}, requests: {}, lastSyncedAt: null });
+const freshState = () => ({ version: 1, configId: configurationId, revision: 1, tagCatalog: emptyTagCatalog(), tagsMigrated: false, areasMigrated: false, areaMessage: "", profile: null, issues: {}, createContexts: {}, editContexts: {}, details: {}, queue: [], aliases: {}, itemAliases: {}, deletedKeys: [], recentCreates: {}, requests: {}, lastSyncedAt: null });
 const workflowStatuses = (profile) => {
   const board = profile?.metadata.columns?.flatMap((column) => column.statuses) || [];
   return board.length ? board : profile?.metadata.statuses || [];
 };
 const workflowSignature = (profile) => JSON.stringify(workflowStatuses(profile).map(({ id, name, category }) => ({ id, name, category })));
-const operationLabels = { create: "Create task", update: "Update task", delete: "Delete task", "comment-add": "Add comment", "comment-edit": "Edit comment", "comment-delete": "Delete comment", "attachment-add": "Upload attachment", "attachment-delete": "Delete attachment", "link-add": "Link tasks", "link-delete": "Remove issue link" };
+const operationLabels = { area: "Sync task Area", labels: "Sync task tags", "tag-catalog": "Back up tag list to Jira", create: "Create task", update: "Update task", delete: "Delete task", "comment-add": "Add comment", "comment-edit": "Edit comment", "comment-delete": "Delete comment", "attachment-add": "Upload attachment", "attachment-delete": "Delete attachment", "link-add": "Link tasks", "link-delete": "Remove issue link" };
 
 export class JiraWorkspace {
   constructor({ store = workspaceStore(), now = () => new Date().toISOString() } = {}) {
@@ -87,8 +89,18 @@ export class JiraWorkspace {
       if (!issue) continue;
       if (op.type === "update") {
         Object.assign(issue.fields, copy(op.prepared || {}));
+        const previousCategory = issue.fields.status?.statusCategory?.key;
         issue.fields.status = this.statusFor(op.payload, issue.fields.status);
+        if (issue.fields.status?.statusCategory?.key !== previousCategory) {
+          issue.fields.statuscategorychangedate = op.createdAt;
+          issue.fields.resolutiondate = issue.fields.status?.statusCategory?.key === "done" ? op.createdAt : null;
+        }
         if (issue.fields.priority?.id) issue.fields.priority = this.profile.metadata.priorities.find((priority) => priority.id === issue.fields.priority.id) || issue.fields.priority;
+      }
+      if (op.type === "labels") issue.fields.labels = applyLabelDelta(issue.fields.labels, op.payload);
+      if (op.type === "area") {
+        const option = this.areaCatalogView().options.find((option) => option.id === op.payload.optionId);
+        issue.fields[op.payload.fieldId] = op.payload.optionId ? { id: op.payload.optionId, value: option?.name || op.payload.optionName } : null;
       }
       if (op.type === "delete") issue.syncDeleted = true;
       issue.syncStatus = issue.syncStatus === "attention" || ["failed", "conflict", "uncertain"].includes(op.status) ? "attention" : op.type === "delete" ? "pending-delete" : "pending";
@@ -103,11 +115,161 @@ export class JiraWorkspace {
   }
   snapshot() {
     const keys = new Set([...Object.keys(this.state.issues), ...this.state.queue.filter((op) => op.type === "create").map((op) => op.key)]);
-    return { issues: [...keys].map((key) => this.viewIssue(key)).filter(Boolean), aliases: copy(this.state.aliases), deletedKeys: [...this.state.deletedKeys], revision: this.state.revision, snapshotStartedAt: this.now(), queue: this.queueSummary() };
+    return { issues: [...keys].map((key) => this.viewIssue(key)).filter(Boolean), aliases: copy(this.state.aliases), deletedKeys: [...this.state.deletedKeys], revision: this.state.revision, snapshotStartedAt: this.now(), tagCatalog: this.tagCatalogView(), tagsMigrated: this.state.tagsMigrated, areaCatalog: this.areaCatalogView(), areasMigrated: this.state.areasMigrated, queue: this.queueSummary() };
   }
+  areaCatalogView() {
+    const catalog = readAreaCatalog(this.profile?.metadata.areaCatalog);
+    return { ...catalog, message: this.state.areaMessage || catalog.message };
+  }
+  queueArea(key, optionId, parentOperationId) {
+    const catalog = this.areaCatalogView(), issue = this.viewIssue(key);
+    if (!catalog.ready) throw jiraError(catalog.message || "The Jira Area field is not ready.");
+    if (!issue || issue.syncDeleted) throw jiraError("Task not found in the cached Jira board.", 404);
+    const option = optionId === null ? null : catalog.options.find((option) => option.id === optionId && !option.disabled);
+    if (optionId !== null && !option) throw jiraError("Choose an available Area from Jira.");
+    if (areaOptionId(issue.fields[catalog.fieldId]) === optionId) return this.pending(key).filter((op) => op.type === "area").at(-1)?.id;
+    const op = this.makeOperation("area", this.resolve(key), { fieldId: catalog.fieldId, optionId, optionName: option?.name || "Unassigned", ...(parentOperationId ? { parentOperationId } : {}) }, { base: copy(issue.fields) });
+    this.state.queue.push(op); return op.id;
+  }
+  async initializeAreas(payload) {
+    if (this.state.areasMigrated) return;
+    const catalog = this.areaCatalogView();
+    if (!catalog.ready) return;
+    if (!Array.isArray(payload.areas) || !Array.isArray(payload.assignments)) throw jiraError("The existing Area list is required.");
+    const issues = this.snapshot().issues.filter((issue) => !issue.syncDeleted);
+    if (issues.some((issue) => !validLocalKey(issue.key) && !Object.hasOwn(issue.fields, catalog.fieldId))) {
+      this.state.areaMessage = "Waiting for Jira to load existing Area values. Your local Areas will be kept until the next successful sync."; return;
+    }
+    const missing = payload.areas.filter((area) => !catalog.options.some((option) => !option.disabled && areaNameKey(option.name) === areaNameKey(area.name)));
+    if (missing.length) { this.state.areaMessage = `Add these choices to the Jira Area dropdown to preserve your existing Areas: ${missing.map((area) => area.name).join(", ")}.`; return; }
+    const mapping = new Map(payload.areas.map((area) => [area.id, catalog.options.find((option) => areaNameKey(option.name) === areaNameKey(area.name)).id]));
+    const assignments = new Map(payload.assignments.map((entry) => [this.resolve(entry.key), entry.areaId ? mapping.get(entry.areaId) : null]));
+    await this.transaction(() => {
+      for (const group of issueAreaGroups(issues)) {
+        const remote = areaOptionId(group.root.fields[catalog.fieldId]);
+        const childAreas = [...new Set(group.issues.map((issue) => areaOptionId(issue.fields[catalog.fieldId])).filter(Boolean))];
+        if (!remote && !assignments.get(group.root.key) && childAreas.length > 1) throw jiraError(`Subtasks of ${group.root.key} have different Areas in Jira. Set the parent task's Area in Jira before importing.`);
+        const inherited = remote || assignments.get(group.root.key) || childAreas[0] || null;
+        const dependency = this.queueArea(group.root.key, inherited);
+        for (const child of group.issues) if (child.key !== group.root.key) this.queueArea(child.key, inherited, dependency);
+      }
+      this.state.areasMigrated = true; this.state.areaMessage = "";
+    });
+  }
+  async assignArea(payload) {
+    if (!this.state.areasMigrated) throw jiraError(this.areaCatalogView().message || "Finish configuring the Jira Area field first.");
+    if (!Array.isArray(payload.keys) || !payload.keys.length || payload.keys.some((key) => !validTaskKey(key))) throw jiraError("Select valid tasks to move.");
+    const selected = new Set(payload.keys.map((key) => this.resolve(key)));
+    const snapshot = this.snapshot();
+    if ([...selected].some((key) => !snapshot.issues.some((issue) => issue.key === key && !issue.syncDeleted))) throw jiraError("A selected task is no longer available. Refresh the board.", 409);
+    await this.transaction(() => {
+      for (const group of issueAreaGroups(snapshot.issues).filter((group) => group.issues.some((issue) => selected.has(issue.key)))) {
+        const dependency = this.queueArea(group.root.key, payload.optionId ?? null);
+        for (const child of group.issues) if (child.key !== group.root.key) this.queueArea(child.key, payload.optionId ?? null, dependency);
+      }
+    });
+  }
+  async reconcileAreas() {
+    const catalog = this.areaCatalogView();
+    if (!this.state.areasMigrated || !catalog.ready) return;
+    const changes = [];
+    for (const group of issueAreaGroups(this.snapshot().issues)) {
+      if (group.issues.some((issue) => this.pending(issue.key).some((op) => op.type === "area"))) continue;
+      const desired = areaOptionId(group.root.fields[catalog.fieldId]);
+      if (desired && !catalog.options.some((option) => option.id === desired && !option.disabled)) continue;
+      for (const child of group.issues) if (child.key !== group.root.key && areaOptionId(child.fields[catalog.fieldId]) !== desired) changes.push({ key: child.key, desired });
+    }
+    if (changes.length) await this.transaction(() => { for (const change of changes) this.queueArea(change.key, change.desired); });
+  }
+  tagCatalogView() {
+    let catalog = readTagCatalog(this.state.tagCatalog);
+    for (const op of this.state.queue) if (op.type === "tag-catalog") {
+      // Keep the local intent visible while the queue reports any remote catalog conflict.
+      const upsert = op.payload.upsert || [];
+      const base = { ...catalog, tags: catalog.tags.filter((tag) => !upsert.some((entry) => entry.id !== tag.id && (entry.label === tag.label || entry.name.toLowerCase() === tag.name.toLowerCase()))) };
+      catalog = changeTagCatalog(base, op.payload);
+    }
+    return catalog;
+  }
+  queueCatalog(change) {
+    changeTagCatalog(this.tagCatalogView(), change);
+    this.state.queue.push(this.makeOperation("tag-catalog", "tag-catalog", change));
+  }
+  queueLabels(key, value) {
+    const delta = labelDelta(value), issue = this.viewIssue(key);
+    if (!issue || issue.syncDeleted) throw jiraError("Task not found in the cached Jira board.", 404);
+    // Idempotent intents preserve labels added in Jira after this offline edit.
+    if (equal(applyLabelDelta(issue.fields.labels, delta), issue.fields.labels || [])) return;
+    this.state.queue.push(this.makeOperation("labels", this.resolve(key), delta));
+  }
+  async initializeTags(payload) {
+    if (this.state.tagsMigrated) return;
+    if (!Array.isArray(payload.tags) || !Array.isArray(payload.assignments)) throw jiraError("An existing tag list is required.");
+    await this.transaction(() => {
+      const ids = new Map(), upsert = [];
+      for (const raw of payload.tags) {
+        const tag = cloudTag(raw), existing = this.tagCatalogView().tags.find((entry) => entry.id === tag.id || entry.label === tag.label);
+        const canonical = existing || tag;
+        ids.set(tag.id, canonical);
+        if (!existing) upsert.push(tag);
+      }
+      if (upsert.length) this.queueCatalog({ upsert });
+      for (const assignment of payload.assignments) {
+        if (!validTaskKey(assignment.key) || !Array.isArray(assignment.tagIds)) throw jiraError("Invalid existing tag assignment.");
+        const issue = this.viewIssue(assignment.key);
+        if (!issue || issue.syncDeleted) continue;
+        const add = assignment.tagIds.map((id) => { const tag = ids.get(id); if (!tag) throw jiraError("An existing tag was not found."); return tag.label; });
+        this.queueLabels(assignment.key, { add });
+      }
+      this.state.tagsMigrated = true;
+    });
+  }
+  async saveTag(payload) {
+    const previous = this.tagCatalogView().tags.find((entry) => entry.id === payload.tag?.id);
+    const tag = cloudTag({ ...payload.tag, label: previous?.name === payload.tag?.name ? previous.label : jiraTagLabel(payload.tag?.name) });
+    await this.transaction(() => {
+      const catalog = this.tagCatalogView(), old = catalog.tags.find((entry) => entry.id === tag.id);
+      this.queueCatalog({ upsert: [tag], ...(old && old.label !== tag.label ? { retire: [old.label] } : {}) });
+      if (old && old.label !== tag.label) for (const issue of this.snapshot().issues) {
+        if (!issue.syncDeleted && issue.fields.labels?.includes(old.label)) this.queueLabels(issue.key, { add: [tag.label], remove: [old.label] });
+      }
+    });
+  }
+  async deleteTag(id) {
+    const tag = this.tagCatalogView().tags.find((entry) => entry.id === id);
+    if (!tag) throw jiraError("Tag not found.", 404);
+    await this.transaction(() => {
+      this.queueCatalog({ remove: [id], retire: [tag.label] });
+      for (const issue of this.snapshot().issues) if (!issue.syncDeleted && issue.fields.labels?.includes(tag.label)) this.queueLabels(issue.key, { remove: [tag.label] });
+    });
+  }
+  async assignTag(payload) {
+    const tag = this.tagCatalogView().tags.find((entry) => entry.id === payload.tagId);
+    if (!tag || typeof payload.assigned !== "boolean") throw jiraError("Choose an existing tag to add or remove.");
+    await this.transaction(() => this.queueLabels(payload.key, payload.assigned ? { add: [tag.label] } : { remove: [tag.label] }));
+  }
+  async discoverTags() {
+    if (!this.state.tagsMigrated) return;
+    await this.transaction(() => {
+      const catalog = this.tagCatalogView(), labels = new Set(this.snapshot().issues.filter((issue) => !issue.syncDeleted).flatMap((issue) => issue.fields.labels || []));
+      const unknown = [...labels].filter((label) => !catalog.tags.some((tag) => tag.label === label) && !catalog.retired.includes(label));
+      const names = new Set(catalog.tags.map((tag) => tag.name.toLowerCase()));
+      const upsert = unknown.map((label) => {
+        const base = label.normalize("NFKC");
+        let name = base, suffix = 2;
+        while (names.has(name.toLowerCase())) name = `${base.slice(0, 240)} (${suffix++})`;
+        names.add(name.toLowerCase());
+        return { id: `jira-label-${createHash("sha256").update(label).digest("hex").slice(0, 40)}`, name, label };
+      });
+      const clearRetired = catalog.retired.filter((label) => !labels.has(label) && !this.state.queue.some((op) => op.type === "labels" && op.payload.remove.includes(label)));
+      if (upsert.length || clearRetired.length) this.queueCatalog({ upsert, clearRetired });
+    });
+  }
+
   async prime(client) {
     const profile = { identity: copy(client.identity), baseUrl: client.baseUrl, cloudId: client.cloudId, metadata: copy(client.metadata) };
     this.state.profile = profile;
+    this.state.tagCatalog = await client.readTagCatalog();
     for (const project of client.metadata.projects) {
       const context = await client.createContext(project.id);
       this.state.createContexts[`${project.id}:${context.issueType.id}`] = context;
@@ -129,6 +291,8 @@ export class JiraWorkspace {
       const priority = result.fields.find((field) => field.fieldId === "priority");
       const inherited = priority && inheritedPriority(priority.allowedValues, parent?.fields.priority);
       if (inherited) priority.defaultValue = { id: inherited };
+      const labels = result.fields.find((field) => field.fieldId === "labels");
+      if (labels && parent) labels.defaultValue = [...(parent.fields.labels || [])];
       return result;
     }
     if (!client) throw jiraError("These Jira fields have not been cached. Connect Jira once to load them.", 503);
@@ -187,7 +351,15 @@ export class JiraWorkspace {
     if (!uuid(payload.requestId)) throw jiraError("A creation request ID is required.");
     const key = `local:${payload.requestId}`;
     const fieldsInput = { ...payload.fields, ...(parentKey ? { parent: parentKey } : {}) };
-    const { input, fields } = personalFields(context.fields, fieldsInput, this.profile.identity.accountId, { creating: true, subtask: context.issueType.subtask, parentPriority: this.viewIssue(parentKey || fieldsInput.parent?.key || fieldsInput.parent)?.fields.priority });
+    const parent = this.viewIssue(parentKey || fieldsInput.parent?.key || fieldsInput.parent);
+    const area = this.areaCatalogView();
+    if (this.state.areasMigrated && area.ready && context.fields.some((field) => field.fieldId === area.fieldId)) fieldsInput[area.fieldId] = parent ? areaOptionId(parent.fields[area.fieldId]) : payload.areaOptionId ?? null;
+    const acceptsLabels = context.fields.some((field) => field.fieldId === "labels");
+    // Some Jira boards expose Labels only after creation. Validate and cache the
+    // selection now, then apply it through the existing durable label queue.
+    const metadata = acceptsLabels ? context.fields : [...context.fields, { fieldId: "labels", name: "Labels", required: false, hasDefaultValue: false, schema: { type: "array", items: "string" }, allowedValues: [] }];
+    const { input, fields } = personalFields(metadata, fieldsInput, this.profile.identity.accountId, { creating: true, subtask: context.issueType.subtask, parentPriority: parent?.fields.priority, parentLabels: parent?.fields.labels || [] });
+    if (!acceptsLabels) delete input.labels;
     if (fields.parent) {
       const parent = this.viewIssue(fields.parent.key);
       if (!parent || parent.fields.project?.id !== context.project.id || parent.fields.issuetype?.subtask) throw jiraError("Choose a parent task in this project.");
@@ -209,9 +381,20 @@ export class JiraWorkspace {
     await this.transaction(async () => {
       parentOp = this.prepareCreate(payload, context, payload.parentKey);
       this.state.requests[payload.requestId] = signature;
-      this.state.queue.push(parentOp);
+      const enqueue = (op) => {
+        this.state.queue.push(op);
+        const labels = op.draft.fields.labels || [];
+        if (labels.length && op.payload.fields.labels === undefined) this.state.queue.push(this.makeOperation("labels", op.key, { add: labels, remove: [] }));
+      };
+      enqueue(parentOp);
+      const area = this.areaCatalogView();
+      const ancestor = parentOp.draft.fields.parent?.key ? this.viewIssue(parentOp.draft.fields.parent.key) : null;
+      const optionId = ancestor && area.fieldId ? areaOptionId(ancestor.fields[area.fieldId]) : payload.areaOptionId ?? null;
+      let dependency;
+      if (this.state.areasMigrated && area.ready) dependency = this.queueArea(parentOp.key, optionId);
       for (const child of payload.subtasks || []) {
-        this.state.queue.push(this.prepareCreate(child, childContext, key));
+        const op = this.prepareCreate(child, childContext, key); enqueue(op);
+        if (this.state.areasMigrated && area.ready) this.queueArea(op.key, optionId, dependency);
       }
     });
     return { key, issue: this.viewIssue(key), pending: true, created: true };
@@ -348,7 +531,7 @@ export class JiraWorkspace {
     let changed = true;
     while (changed) {
       changed = false;
-      for (const entry of this.state.queue) if (!ids.has(entry.id) && (removed.has(entry.key) || removed.has(entry.payload.fields?.parent) || removed.has(entry.payload.targetKey) || entry.payload.commentId === `local:${id}`)) {
+      for (const entry of this.state.queue) if (!ids.has(entry.id) && (removed.has(entry.key) || removed.has(entry.payload.fields?.parent) || removed.has(entry.payload.targetKey) || ids.has(entry.payload.parentOperationId) || entry.payload.commentId === `local:${id}`)) {
         ids.add(entry.id); if (entry.type === "create") removed.add(entry.key); changed = true;
       }
     }
@@ -385,6 +568,7 @@ export class JiraWorkspace {
   }
   async execute(op, client) {
     const key = this.resolve(op.key), payload = copy(op.payload);
+    if (op.type === "tag-catalog") return { tagCatalog: await client.changeTagCatalog(payload) };
     if (op.type === "create") {
       if (payload.fields.parent) payload.fields.parent = this.resolve(payload.fields.parent);
       if (validLocalKey(payload.fields.parent)) throw jiraError("Waiting for the parent task to sync.", 425, { dependency: true });
@@ -392,6 +576,11 @@ export class JiraWorkspace {
       return { createdKey: result.key, issue: result.issue };
     }
     if (validLocalKey(key)) throw jiraError("Waiting for the task to sync.", 425, { dependency: true });
+    if (op.type === "labels") return client.changeLabels(key, payload);
+    if (op.type === "area") {
+      if (payload.parentOperationId && this.state.queue.some((entry) => entry.id === payload.parentOperationId)) throw jiraError("Waiting for the parent task's Area to sync.", 425, { dependency: true });
+      return client.setArea(key, { ...payload, expectedOptionId: areaOptionId(op.base?.[payload.fieldId]) });
+    }
     if (op.type === "update") {
       const current = await client.scopedIssue(key);
       this.updateConflicts(op, current);
@@ -455,6 +644,9 @@ export class JiraWorkspace {
   }
   async synchronize(client) {
     await this.load(); await client.verify();
+    if (client.areaFieldId && Date.now() - (client.areaCatalogFetchedAt || 0) > 30000) await client.refreshAreaCatalog();
+    const catalog = await client.readTagCatalog();
+    await this.run(async () => { this.state.tagCatalog = catalog; await this.save(); });
     const blocked = new Set();
     const batch = [...this.state.queue];
     let attempted = 0;
@@ -473,6 +665,7 @@ export class JiraWorkspace {
       try {
         const result = await this.execute(op, client) || {};
         await this.run(async () => {
+          if (result.tagCatalog) this.state.tagCatalog = result.tagCatalog;
           if (result.createdKey) { this.state.aliases[op.key] = result.createdKey; this.state.recentCreates[result.createdKey] = this.now(); }
           if (result.createdKey && this.state.details[op.key]) { this.state.details[result.createdKey] = this.state.details[op.key]; delete this.state.details[op.key]; }
           const key = this.resolve(op.key);
@@ -506,8 +699,12 @@ export class JiraWorkspace {
       const found = new Set(snapshot.issues.map((issue) => issue.key));
       for (const issue of snapshot.issues) if (!this.state.deletedKeys.includes(issue.key)) this.state.issues[issue.key] = issue;
       for (const key of Object.keys(this.state.issues)) if (!found.has(key) && !this.pending(key).length && (!this.state.recentCreates[key] || Date.parse(this.now()) - Date.parse(this.state.recentCreates[key]) > 120000)) delete this.state.issues[key];
-      this.state.profile.metadata = copy(client.metadata); this.state.lastSyncedAt = this.now(); await this.save();
+      this.state.profile.metadata = copy(client.metadata);
+      for (const context of client.areaContexts || []) this.state.createContexts[`${context.project.id}:${context.issueType.id}`] = copy(context);
+      this.state.lastSyncedAt = this.now(); await this.save();
     });
+    await this.run(() => this.discoverTags());
+    await this.run(() => this.reconcileAreas());
     const warmed = new Set(), count = snapshot.issues.length;
     const start = (this.warmCursor || 0) % (count || 1);
     const warmIssues = [...snapshot.issues.slice(start), ...snapshot.issues.slice(0, start)].slice(0, 20);

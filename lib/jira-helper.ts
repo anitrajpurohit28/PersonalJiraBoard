@@ -2,7 +2,10 @@ import { configurationId, helperBaseUrl, helperProtocolVersion, settings } from 
 
 export async function requestJiraHelper(path: string, method = "GET", body?: unknown) {
   let response;
-  try { response = await fetch(`${helperBaseUrl}/api/jira/${path}`, { method, signal: AbortSignal.timeout(180000), headers: body === undefined ? undefined : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }); }
+  const override = process.env.PERSONAL_TASK_BOARD_HELPER_PORT;
+  if (override && (!/^\d+$/.test(override) || Number(override) < 1024 || Number(override) > 65535)) throw new Error("Invalid local Jira helper port.");
+  const baseUrl = override ? `http://127.0.0.1:${override}` : helperBaseUrl;
+  try { response = await fetch(`${baseUrl}/api/jira/${path}`, { method, signal: AbortSignal.timeout(180000), headers: body === undefined ? undefined : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }); }
   catch { throw new Error("The local Jira connection is unavailable. Restart the app."); }
   const payload = await response.json() as Record<string, unknown>;
   if (!response.ok) throw Object.assign(new Error(String(payload.error || "Unable to reach Jira.")), { status: response.status, uncertain: payload.uncertain });

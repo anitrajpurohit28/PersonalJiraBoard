@@ -37,7 +37,7 @@ export function createJiraHelperServer(broker = new JiraConnection()) {
       else if (request.method === "POST" && pathname === "/api/jira/disconnect") result = broker.disconnect();
       else if (request.method === "POST" && pathname.startsWith("/api/jira/")) {
         const action = pathname.slice("/api/jira/".length);
-        if (!["connect", "issues", "create-meta", "edit-meta", "create", "update", "delete", "bulk", "details", "comment-add", "comment-edit", "comment-delete", "attachment-add", "attachment-delete", "attachment-content", "link-add", "link-delete", "queue", "queue-retry", "queue-discard"].includes(action)) throw Object.assign(new Error("Not found."), { status: 404 });
+        if (!["areas-init", "areas-assign", "tags-init", "tags-upsert", "tags-delete", "tags-assign", "connect", "issues", "create-meta", "edit-meta", "create", "update", "delete", "bulk", "details", "comment-add", "comment-edit", "comment-delete", "attachment-add", "attachment-delete", "attachment-content", "link-add", "link-delete", "queue", "queue-retry", "queue-discard"].includes(action)) throw Object.assign(new Error("Not found."), { status: 404 });
         const payload = request.headers["content-length"] === "0" || (!request.headers["content-length"] && !request.headers["transfer-encoding"]) ? {} : await readJson(request);
         result = action === "connect" ? await broker.connect(payload) : await broker.command(action, payload);
       } else { response.writeHead(404); result = { error: "Not found." }; }

@@ -1,3 +1,5 @@
+import { applyLabelDelta, labelDelta, readTagCatalog, changeTagCatalog } from "../lib/jira-tags.mjs";
+import { findAreaField, readAreaCatalog, areaOptionId } from "../lib/jira-areas.mjs";
 import { createHash } from "node:crypto";
 import { settings, configuredSite, configuredCloudId, configuredBoardId } from "../config/settings.mjs";
 import { readJiraIssues, verifyIdentity, ISSUE_FIELDS } from "../lib/jira-reader.mjs";
@@ -71,6 +73,7 @@ export class JiraApi {
     let result;
     try {
       const body = await response.text();
+      if (!body && response.ok && method === "PUT" && pathname.startsWith("/rest/api/3/user/properties/")) return null;
       if (!body && method === "POST" && pathname === "/rest/api/3/issueLink" && response.status === 201) return null;
       result = JSON.parse(body);
     }
@@ -138,7 +141,42 @@ export class JiraApi {
       priorities: (Array.isArray(priorities) ? priorities : []).map(({ id, name }) => ({ id: String(id), name })),
       linkTypes: linkTypes.issueLinkTypes || [], attachmentSettings,
     };
+    const fields = await request("/rest/api/3/field").catch(() => []);
+    const area = findAreaField(Array.isArray(fields) ? fields : [], projects.map((project) => project.id), this.areaFieldId);
+    this.areaFieldId = area?.id || null;
+    this.metadata.areaCatalog = area ? { fieldId: area.id, name: area.name, projectId: String(area.scope?.project?.id || projects[0]?.id || ""), options: [], ready: false, message: "Add the existing Area field to Task and Subtask in Jira Space settings → Work types." } : readAreaCatalog(null);
+    if (area) await this.refreshAreaCatalog();
     this.metadataFetchedAt = Date.now();
+  }
+
+  async refreshAreaCatalog() {
+    const catalog = this.metadata.areaCatalog;
+    if (!catalog?.fieldId) return readAreaCatalog(null);
+    const context = await this.createContext(catalog.projectId);
+    const childType = context.issueTypes.find((type) => type.subtask);
+    const child = childType ? await this.createContext(catalog.projectId, childType.id) : null;
+    const taskField = context.fields.find((field) => field.fieldId === catalog.fieldId);
+    const childField = child?.fields.find((field) => field.fieldId === catalog.fieldId);
+    this.areaContexts = [context, child].filter(Boolean);
+    const ready = Boolean(taskField && (!childType || childField));
+    this.metadata.areaCatalog = readAreaCatalog({ ...catalog, options: (taskField?.allowedValues || childField?.allowedValues || []).map((option) => ({ id: String(option.id), name: option.value || option.name, disabled: option.disabled })), ready, message: ready ? "Area choices sync from Jira." : "Add the existing Area field to Task and Subtask in Jira Space settings → Work types, then save both layouts." });
+    this.areaCatalogFetchedAt = Date.now();
+    return this.metadata.areaCatalog;
+  }
+
+  async setArea(key, { fieldId, optionId, expectedOptionId }) {
+    return this.exclusive(async () => {
+      await this.verify();
+      const catalog = readAreaCatalog(this.metadata.areaCatalog);
+      if (!catalog.ready || fieldId !== catalog.fieldId) throw jiraError(catalog.message || "The Jira Area field is not ready.");
+      const option = optionId === null ? null : catalog.options.find((item) => item.id === optionId && !item.disabled);
+      if (optionId !== null && !option) throw jiraError("This Area choice is no longer available in Jira. Refresh the Area choices.", 409);
+      const current = await this.scopedIssue(key), actual = areaOptionId(current.fields[fieldId]);
+      if (actual === optionId) return { issue: current };
+      if (expectedOptionId !== undefined && actual !== expectedOptionId) throw jiraError("This task's Area changed in Jira. Review it before keeping your offline move.", 409, { conflicts: [{ field: "Area", local: option?.name || "Unassigned", remote: current.fields[fieldId]?.value || actual || "Unassigned" }], remoteBase: current.fields });
+      await this.request(`/rest/api/3/issue/${key}`, { method: "PUT", body: { fields: { [fieldId]: option ? { id: option.id } : null } } });
+      return { issue: await this.issue(key) };
+    });
   }
 
   async snapshot() {
@@ -146,7 +184,7 @@ export class JiraApi {
       await this.verify();
       if (Date.now() - this.metadataFetchedAt > 300000) await this.loadMetadata();
       const snapshotStartedAt = new Date().toISOString();
-      const issues = await readJiraIssues((path) => this.request(path), { boardId: this.configuration.boardId, accountId: this.identity.accountId });
+      const issues = await readJiraIssues((path) => this.request(path), { boardId: this.configuration.boardId, accountId: this.identity.accountId, extraFields: this.areaFieldId ? [this.areaFieldId] : [] });
       return { issues, snapshotStartedAt };
     });
   }
@@ -177,12 +215,12 @@ export class JiraApi {
 
   async issue(key) {
     if (!validIssueKey(key)) throw jiraError("Invalid Jira issue key.");
-    return this.request(`/rest/api/3/issue/${key}?fields=${ISSUE_FIELDS}`);
+    return this.request(`/rest/api/3/issue/${key}?fields=${ISSUE_FIELDS}${this.areaFieldId ? `,${this.areaFieldId}` : ""}`);
   }
 
   async scopedIssue(key) {
     if (!validIssueKey(key)) throw jiraError("Invalid Jira issue key.");
-    const found = await readJiraIssues((path) => this.request(path), { boardId: this.configuration.boardId, accountId: this.identity.accountId, keys: [key] });
+    const found = await readJiraIssues((path) => this.request(path), { boardId: this.configuration.boardId, accountId: this.identity.accountId, keys: [key], extraFields: this.areaFieldId ? [this.areaFieldId] : [] });
     if (!found.some((issue) => issue.key === key)) throw jiraError("This issue is outside your configured Jira board.", 403);
     return this.issue(key);
   }
@@ -211,7 +249,7 @@ export class JiraApi {
       if (fields.parent) {
         const parent = await this.scopedIssue(fields.parent.key);
         if (String(parent.fields.project?.id) !== context.project.id || parent.fields.issuetype?.subtask) throw jiraError("Choose a parent task in the same project, rather than another subtask.");
-        fields = personalFields(context.fields, payload.fields, this.identity.accountId, { creating: true, subtask: context.issueType.subtask, parentPriority: parent.fields.priority }).fields;
+        fields = personalFields(context.fields, payload.fields, this.identity.accountId, { creating: true, subtask: context.issueType.subtask, parentPriority: parent.fields.priority, parentLabels: parent.fields.labels || [] }).fields;
       }
       fields.project = { id: context.project.id };
       fields.issuetype = { id: context.issueType.id };
@@ -261,6 +299,38 @@ export class JiraApi {
     for (const field of transition.fields) if (field.required && !field.hasDefaultValue && (fields[field.fieldId] === undefined || fields[field.fieldId] === null || fields[field.fieldId] === "")) throw jiraError(`Jira requires ${field.name} for this status change. Set it in task details.`);
     await this.request(`/rest/api/3/issue/${key}/transitions`, { method: "POST", body: { transition: { id: transition.id }, ...(Object.keys(fields).length ? { fields } : {}) } });
     return this.issue(key);
+  }
+
+  tagCatalogPath() {
+    return `/rest/api/3/user/properties/personal-jira-board.tags.v1.${this.configuration.boardId ? `board-${this.configuration.boardId}` : "personal"}?accountId=${encodeURIComponent(this.identity.accountId)}`;
+  }
+  async readTagCatalog() {
+    try { return readTagCatalog((await this.request(this.tagCatalogPath())).value); }
+    catch (error) { if (error.status === 404) return readTagCatalog(null); throw error; }
+  }
+  async changeTagCatalog(change) {
+    return this.exclusive(async () => {
+      await this.verify();
+      const catalog = changeTagCatalog(await this.readTagCatalog(), change);
+      await this.request(this.tagCatalogPath(), { method: "PUT", body: catalog });
+      return catalog;
+    });
+  }
+  async changeLabels(key, value) {
+    return this.exclusive(async () => {
+      await this.verify();
+      const delta = labelDelta(value), current = await this.scopedIssue(key);
+      const before = current.fields.labels || [], after = applyLabelDelta(before, delta);
+      const operations = [
+        ...delta.add.filter((label) => !before.includes(label)).map((label) => ({ add: label })),
+        ...delta.remove.filter((label) => before.includes(label)).map((label) => ({ remove: label })),
+      ];
+      if (!operations.length) return { issue: current };
+      await this.request(`/rest/api/3/issue/${key}`, { method: "PUT", body: { update: { labels: operations } } });
+      // Jira may accept the write before a subsequent read is available. The delta is safe to retry.
+      try { return { issue: await this.issue(key) }; }
+      catch (error) { if (!error.retryable && !(error.status >= 500)) throw error; return { issue: { ...current, fields: { ...current.fields, labels: after } } }; }
+    });
   }
 
   async update(key, payload) {

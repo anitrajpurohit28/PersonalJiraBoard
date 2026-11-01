@@ -81,12 +81,16 @@ export function taskAgeInDays(task: TaskCreation, now = Date.now()): number | nu
 
 // Stable local IDs record the order children were added to this app. Jira can
 // return them in any order or replace a temporary key during synchronization.
-// A saved drag order takes precedence; newly created children append after it.
-export function orderSubtasks<T extends Pick<Task, "id" | "manualOrder" | "createdAt" | "jiraCreatedAt">>(tasks: T[]): T[] {
+// Unfinished children come first. Within each section, a saved drag order
+// takes precedence and newly created children append after existing ones.
+export function orderSubtasks<T extends Pick<Task, "id" | "manualOrder" | "createdAt" | "jiraCreatedAt"> & Partial<Pick<Task, "archived">>>(tasks: T[]): T[] {
   return [...tasks].sort((a, b) => {
-    const rank = compareManualOrder(a, b);
-    return rank || a.id - b.id;
+    return Number(Boolean(a.archived)) - Number(Boolean(b.archived)) || compareManualOrder(a, b) || a.id - b.id;
   });
+}
+// Hidden completed children are not included in board bulk actions.
+export function selectableGroupTasks(group: TaskGroup, showCompleted: boolean): Task[] {
+  return group.matches.filter((task) => task.id === group.parent?.id || !task.archived || showCompleted);
 }
 function compareManualOrder(a: Pick<Task, "manualOrder">, b: Pick<Task, "manualOrder">) {
   if (a.manualOrder == null) return b.manualOrder == null ? 0 : 1;

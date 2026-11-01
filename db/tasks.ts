@@ -37,6 +37,15 @@ export async function ensureTaskSchema() {
     try { await d1.prepare(tagOrderMigration).run(); }
     catch (error) { if (!String(error).includes("duplicate column")) throw error; }
   }
+  for (const name of ["jira_tag_id", "jira_label"]) if (!tagColumns.results.some((column) => column.name === name)) {
+    try { await d1.prepare(`ALTER TABLE personal_tags ADD COLUMN ${name} TEXT`).run(); }
+    catch (error) { if (!String(error).includes("duplicate column")) throw error; }
+  }
+  const areaColumns = (await d1.prepare("PRAGMA table_info(personal_areas)").all<{ name: string }>()).results;
+  for (const [name, definition] of [["jira_field_id", "TEXT"], ["jira_option_id", "TEXT"], ["disabled", "INTEGER NOT NULL DEFAULT 0"]]) if (!areaColumns.some((column) => column.name === name)) {
+    try { await d1.prepare(`ALTER TABLE personal_areas ADD COLUMN ${name} ${definition}`).run(); }
+    catch (error) { if (!String(error).includes("duplicate column")) throw error; }
+  }
   const result = await d1.prepare("PRAGMA table_info(tasks)").all<{ name: string }>();
   const columns = new Set((result.results ?? []).map((column) => column.name));
   for (const name of ["jira_status_category", "jira_status_id", "jira_description", "jira_priority_id", "jira_assignee_id", "jira_project_id", "jira_project_key", "jira_issue_type_id", "jira_issue_type", "jira_parent_key", "jira_due_date", "jira_labels", "jira_pending_until", "jira_sync_status", "jira_sync_error", "jira_sync_revision", "jira_is_subtask", "jira_comments"]) {

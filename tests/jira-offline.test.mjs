@@ -475,3 +475,12 @@ test("subtasks inherit queued parent priority offline, preserve overrides and sy
   assert.equal(fixture.issues.get(restarted.resolve(explicit.key)).fields.priority.name, "Medium");
   assert.deepEqual(children.map((row) => fixture.issues.get(restarted.resolve(row.key)).fields.priority.name), ["High", "Medium"]);
 });
+
+test('offline completion uses its saved timestamp across restart, edits and reopening',async()=>{
+ const {workspace,fixture}=await setup();workspace.now=()=> '2026-10-26T00:01:00.000Z';
+ await workspace.update('KAN-1',{action:'done'});assert.equal(workspace.viewIssue('KAN-1').fields.resolutiondate,'2026-10-26T00:01:00.000Z');
+ workspace.now=()=> '2026-10-27T09:00:00.000Z';await workspace.update('KAN-1',{fields:{summary:'Unrelated edit'}});assert.equal(workspace.viewIssue('KAN-1').fields.resolutiondate,'2026-10-26T00:01:00.000Z');
+ const restarted=fixture.makeWorkspace();await restarted.load();assert.equal(restarted.viewIssue('KAN-1').fields.resolutiondate,'2026-10-26T00:01:00.000Z');
+ await restarted.update('KAN-1',{action:'restore'});assert.equal(restarted.viewIssue('KAN-1').fields.resolutiondate,null);
+ restarted.now=()=> '2026-10-28T09:00:00.000Z';await restarted.update('KAN-1',{action:'done'});assert.equal(restarted.viewIssue('KAN-1').fields.resolutiondate,'2026-10-28T09:00:00.000Z');
+});

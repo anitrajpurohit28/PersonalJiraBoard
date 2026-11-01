@@ -14,7 +14,7 @@ export type JiraIssue = {
     project?: { id?: string; key?: string };
     issuetype?: { id?: string; name?: string; subtask?: boolean };
     parent?: { key?: string } | null; duedate?: string | null; labels?: string[];
-    created?: string; updated?: string;
+    created?: string; updated?: string; resolutiondate?: string | null; statuscategorychangedate?: string | null;
   };
 };
 type Existing = { id: number; jira_key: string; status: string; archived: number; jira_status_category: string | null };
@@ -32,6 +32,7 @@ export function planPersonalJiraSync(issues: JiraIssue[], existingRows: Existing
     const fields = issue.fields;
     const category = fields.status?.statusCategory?.key || "";
     const done = category === "done";
+    const completedAt = done ? normalizedDate(fields.resolutiondate) || normalizedDate(fields.statuscategorychangedate) : null;
     const pendingUntil = options.createdLocally ? new Date(Date.parse(syncedAt) + 120000).toISOString() : null;
     const values = {
       jira_url: validLocalKey(issue.key) ? "" : `${baseUrl}/browse/${issue.key}`, title: (fields.summary || "").slice(0, 255), priority: issuePriority(issue),
@@ -53,11 +54,11 @@ export function planPersonalJiraSync(issues: JiraIssue[], existingRows: Existing
     const existing = byKey.get(issue.key);
     if (existing) {
       statements.push({ sql: `UPDATE tasks SET ${entries.map(([key]) => `${key} = ?`).join(", ")},
-        completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, ?) ELSE NULL END,
+        completed_at = CASE WHEN ? = 1 THEN COALESCE(?, completed_at, ?) ELSE NULL END,
         ${done ? "notify_at = NULL, notify_fired = 0," : ""}
         updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND ${issue.syncRevision ? "COALESCE(jira_sync_revision, 0) <= ?" : "(jira_updated_at IS NULL OR ? IS NULL OR jira_updated_at <= ?)"}`,
-        params: [...entries.map(([, value]) => value), done ? 1 : 0, syncedAt, existing.id, ...(issue.syncRevision ? [issue.syncRevision] : [values.jira_updated_at, values.jira_updated_at])] });
+        params: [...entries.map(([, value]) => value), done ? 1 : 0, completedAt, syncedAt, existing.id, ...(issue.syncRevision ? [issue.syncRevision] : [values.jira_updated_at, values.jira_updated_at])] });
       updated++;
     } else {
       statements.push({ sql: `INSERT INTO tasks (jira_key, source, ${entries.map(([key]) => key).join(", ")}, completed_at, jira_pending_until)
@@ -65,7 +66,7 @@ export function planPersonalJiraSync(issues: JiraIssue[], existingRows: Existing
         WHERE NOT EXISTS (SELECT 1 FROM jira_deleted_tasks WHERE jira_key = ?)
         ${validLocalKey(issue.key) ? "AND NOT EXISTS (SELECT 1 FROM jira_task_aliases WHERE local_key = ?)" : ""}
         ON CONFLICT(jira_key) DO NOTHING`,
-        params: [issue.key, ...entries.map(([, value]) => value), done ? syncedAt : null, pendingUntil, issue.key, ...(validLocalKey(issue.key) ? [issue.key] : [])] });
+        params: [issue.key, ...entries.map(([, value]) => value), done ? completedAt || syncedAt : null, pendingUntil, issue.key, ...(validLocalKey(issue.key) ? [issue.key] : [])] });
       imported++;
     }
   }

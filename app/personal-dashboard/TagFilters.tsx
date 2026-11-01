@@ -14,7 +14,7 @@ export function TagFilters({ tags, selected, onToggle, onClear }: { tags: TaskTa
     <div className="tag-filters" role="group" aria-label="Task tag filters" aria-describedby={helpId}>
       {stacks.map((stack) => <div className="tag-filter-stack" key={stack[0].id}>
         {stack.map((tag) => <button type="button" key={tag.id} aria-pressed={selected.includes(tag.id)} onClick={() => onToggle(tag.id)} title={tag.name}>
-          <span className="tag-filter-check" aria-hidden="true">{selected.includes(tag.id) ? "✓" : ""}</span><span className="tag-filter-name">{tag.name}</span>
+          <span className="tag-filter-name">{tag.name}</span>
         </button>)}
       </div>)}
     </div>

@@ -105,6 +105,7 @@ export class JiraConnection {
     }
     const client = this.phase === "connected" && !this.paused ? this.client : null;
     let result;
+    const queuedBefore = this.workspace.state.queue.length;
     if (action === "issues") { if (payload.refresh === true) this.kick(); result = this.workspace.snapshot(); }
     else if (action === "edit-meta") {
       // Cached reads never wait for Jira or hold the local mutation queue.
@@ -114,6 +115,12 @@ export class JiraConnection {
       result = { details: await this.workspace.details(payload.key, payload.refresh === true ? client : null) };
     }
     else result = await this.workspace.run(async () => {
+      if (action === "areas-init") { await this.workspace.initializeAreas(payload); return {}; }
+      if (action === "areas-assign") { await this.workspace.assignArea(payload); return {}; }
+      if (action === "tags-init") { await this.workspace.initializeTags(payload); await this.workspace.discoverTags(); return {}; }
+      if (action === "tags-upsert") { await this.workspace.saveTag(payload); return {}; }
+      if (action === "tags-delete") { await this.workspace.deleteTag(payload.tagId); return {}; }
+      if (action === "tags-assign") { await this.workspace.assignTag(payload); return {}; }
       if (action === "create-meta") return this.workspace.createContext(payload, client);
       if (action === "create") return this.workspace.create(payload, client);
       if (action === "update") return this.workspace.update(payload.key, payload);
@@ -138,7 +145,7 @@ export class JiraConnection {
       if (action === "queue-discard") return this.workspace.discard(payload.id, payload.confirm === true);
       throw jiraError("Unknown Jira action.", 404);
     });
-    if (!["issues", "create-meta", "edit-meta", "attachment-content", "details"].includes(action)) this.kick();
+    if (["tags-init", "areas-init"].includes(action) ? this.workspace.state.queue.length > queuedBefore : !["issues", "create-meta", "edit-meta", "attachment-content", "details"].includes(action)) this.kick();
     return { ...this.publicStatus(), ...this.workspace.snapshot(), ...result };
   }
 }

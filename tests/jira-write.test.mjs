@@ -156,3 +156,15 @@ test("direct Jira subtask creation defaults to the parent's current priority wit
   const overridden = await create({ priority: "3" });
   assert.equal(overridden.issue.fields.priority.name, "Medium");
 });
+
+
+test("direct Jira subtask creation defaults to the parent's labels and respects explicit replacements or removal", async () => {
+  const fixture = jiraFixture(), jira = await fixture.makeClient().initialise();
+  fixture.issues.get("KAN-1").fields.labels = ["Work", "smallTask"];
+  const create = (fields = {}) => jira.create({ ...createRequest({ parent: "KAN-1", ...fields }), issueTypeId: "subtask" });
+  assert.deepEqual((await create()).issue.fields.labels, ["Work", "smallTask"]);
+  assert.deepEqual((await create({ labels: ["Personal"] })).issue.fields.labels, ["Personal"]);
+  assert.deepEqual((await create({ labels: [] })).issue.fields.labels, []);
+  assert.deepEqual(fixture.issues.get("KAN-1").fields.labels, ["Work", "smallTask"]);
+  assert.deepEqual((await jira.create(createRequest())).issue.fields.labels, []);
+});

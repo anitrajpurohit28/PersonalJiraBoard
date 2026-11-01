@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupBoardTasks, filterTaskGroups, sortTaskGroups, orderSubtasks, taskAgeInDays, taskCreationTime, matchesTaskSearch, parseTaskSearch, isTaskOverdue } from "../lib/board-tasks.ts";
-import { areaColor, validateUiSettings } from "../config/ui-settings.mjs";
+import { groupBoardTasks, filterTaskGroups, sortTaskGroups, orderSubtasks, selectableGroupTasks, taskAgeInDays, taskCreationTime, matchesTaskSearch, parseTaskSearch, isTaskOverdue } from "../lib/board-tasks.ts";
+import { validateUiSettings } from "../config/ui-settings.mjs";
 const task = (id, values = {}) => ({ id, jiraKey: `KAN-${id}`, title: `Task ${id}`, parentKey: null, isSubtask: false, archived: false, source: "jira", priority: 3, jiraPriority: "Medium", description: "", notes: "", updates: [], comments: [], labels: [], state: "In Progress", status: "now", syncStatus: "synced", ...values });
 const filters = (values = {}) => ({ view: "active", source: "all", priority: "all", state: "all", query: "", ...values });
 
@@ -130,18 +130,9 @@ test("display layout configuration accepts right or center without changing acco
   assert.throws(() => validateUiSettings({ taskDetailsPosition: "right", apiToken: "wrong-file" }));
 });
 
-test("Area tints follow the configured names and stay consistent for user-defined areas", () => {
-  assert.equal(areaColor("Work"), "blue");
-  assert.equal(areaColor(" learn "), "green");
-  assert.equal(areaColor("PERSONAL"), "grey");
-  assert.equal(areaColor(null), "neutral");
-  assert.equal(areaColor("New Area"), areaColor("new   area"));
-  const config = validateUiSettings({ taskDetailsPosition: "right", areaColors: { " Custom ": "purple", Work: "teal" } });
-  assert.equal(areaColor("CUSTOM", config.areaColors), "purple");
-  assert.equal(areaColor("work", config.areaColors), "teal");
-  for (const areaColors of [[], "blue", { Work: "invalid" }, { " ": "blue" }, { Work: "blue", work: "green" }]) {
-    assert.throws(() => validateUiSettings({ taskDetailsPosition: "right", areaColors }));
-  }
+test("legacy Area color settings are accepted while the UI uses a uniform highlight", () => {
+  const config = validateUiSettings({ taskDetailsPosition: "right", areaColors: { Work: "blue" } });
+  assert.equal(config.areaColors, undefined);
 });
 
 const sortedGroups = (rows, sort, view = "active", today = "2026-10-18") => sortTaskGroups(filterTaskGroups(groupBoardTasks(rows), filters({ view }), today), sort, today);
@@ -272,18 +263,18 @@ test("manual sorting respects dragged positions; choosing either automatic mode 
   assert.deepEqual(groupIds(sortedGroups(rows, "oldest")), [3, 2, 1, 4]);
 });
 
-test("new subtasks append despite newest-first API results, priority changes, completion and local-to-Jira key mapping", () => {
+test("new subtasks append to unfinished work despite API order, priority changes and Jira key replacement", () => {
   const first = task(2, { parentKey: "KAN-1", createdAt: "2026-10-15 09:00:00", archived: true });
   const second = task(3, { parentKey: "KAN-1", createdAt: "2026-10-16 09:00:00", manualOrder: null });
   const newest = task(4, { jiraKey: "local:pending", parentKey: "KAN-1", createdAt: "2026-10-18 09:00:00", priority: 2 });
   for (const sort of ["priority", "oldest", "manual"]) {
     for (const child of [newest, { ...newest, jiraKey: "KAN-99", jiraCreatedAt: "2026-10-15T09:01:00Z" }]) {
-      assert.deepEqual(sortedGroups([child, task(1), second, first], sort)[0].children.map((row) => row.id), [2, 3, 4]);
+      assert.deepEqual(sortedGroups([child, task(1), second, first], sort)[0].children.map((row) => row.id), [3, 4, 2]);
     }
   }
   const sameTime = [task(5, { createdAt: "2026-10-18" }), task(4, { createdAt: "2026-10-18" })];
   assert.deepEqual(orderSubtasks(sameTime).map((row) => row.id), [4, 5]);
-  assert.deepEqual(orderSubtasks([{ ...second, manualOrder: 0 }, { ...first, manualOrder: 1 }, newest]).map((row) => row.id), [3, 2, 4]);
+  assert.deepEqual(orderSubtasks([{ ...second, manualOrder: 0 }, { ...first, manualOrder: 1 }, newest]).map((row) => row.id), [3, 4, 2]);
 });
 
 
@@ -431,4 +422,26 @@ test("a parent and its subtasks stay in one area, including completed and matchi
   const work = filterTaskGroups(groups, filters({ areaId: "work", query: "reference" }));
   assert.equal(work[0].parent.id, 1);
   assert.deepEqual(work[0].matches.map((row) => row.id), [1, 2, 3]);
+});
+
+
+test("completed subtasks sink below unfinished work even with earlier manual ranks, without changing saved order", () => {
+  const rows = [task(2, { manualOrder: 0, archived: true }), task(3, { manualOrder: 3 }), task(4, { manualOrder: 1, archived: true }), task(5, { manualOrder: 2 })];
+  const before = structuredClone(rows);
+  assert.deepEqual(orderSubtasks(rows).map((row) => row.id), [5, 3, 2, 4]);
+  assert.deepEqual(rows, before);
+  const restored = rows.map((row) => row.id === 2 ? { ...row, archived: false } : row);
+  assert.deepEqual(orderSubtasks(restored).map((row) => row.id), [2, 5, 3, 4]);
+});
+
+test("board bulk selection excludes hidden completed children, and includes them only when expanded", () => {
+  const parent = task(1), active = task(2, { parentKey: "KAN-1" }), completed = task(3, { parentKey: "KAN-1", archived: true });
+  const group = filterTaskGroups(groupBoardTasks([parent, active, completed]), filters())[0];
+  assert.deepEqual(selectableGroupTasks(group, false).map((row) => row.id), [1, 2]);
+  assert.deepEqual(selectableGroupTasks(group, true).map((row) => row.id), [1, 2, 3]);
+  const doneGroup = filterTaskGroups(groupBoardTasks([{ ...parent, archived: true }, active, completed]), filters({ view: "done" }))[0];
+  assert.deepEqual(selectableGroupTasks(doneGroup, false).map((row) => row.id), [1, 2]);
+  const orphan = filterTaskGroups(groupBoardTasks([completed]), filters({ view: "done" }))[0];
+  assert.deepEqual(selectableGroupTasks(orphan, false), []);
+  assert.deepEqual(selectableGroupTasks(orphan, true).map((row) => row.id), [3]);
 });

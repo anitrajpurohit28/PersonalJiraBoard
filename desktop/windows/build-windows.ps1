@@ -1,6 +1,6 @@
 param(
     [ValidateSet("win-x64", "win-arm64")]
-    [string]$Runtime = "win-x64"
+    [string]$Runtime
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,45 +8,58 @@ $ProjectDirectory = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $WindowsProject = Join-Path $PSScriptRoot "PersonalTaskBoard.Windows.csproj"
 $IconSource = Join-Path $ProjectDirectory "desktop\assets\PersonalTaskBoard.png"
 $IconOutput = Join-Path $PSScriptRoot "PersonalTaskBoard.ico"
-$OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$Runtime"
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw "The .NET 8 SDK is required to build the Windows app. Install it from https://dotnet.microsoft.com/download/dotnet/8.0"
 }
-if (-not (Get-Command node -ErrorAction SilentlyContinue) -or
-    -not (Get-Command npm -ErrorAction SilentlyContinue)) {
-    throw "Node.js 22.13 or newer is required to run PersonalTaskBoard."
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    throw "Node.js 22.13 or newer is required to run Personal Jira Board."
 }
-if (-not (Test-Path (Join-Path $ProjectDirectory "node_modules"))) {
-    throw "Dependencies are missing. Run npm install before building the Windows app."
+$NodeInfo = & node -p 'JSON.stringify({ version: process.versions.node, arch: process.arch })'
+if ($LASTEXITCODE -ne 0) { throw "Node.js could not start." }
+$NodeInfo = $NodeInfo | ConvertFrom-Json
+if ([version]$NodeInfo.version -lt [version]"22.13.0") { throw "Install Node.js 22.13 or newer, then reopen the terminal." }
+# The pinned workerd runtime ships a Windows x64 binary, so use x64 Node even on ARM PCs.
+if ($NodeInfo.arch -ne "x64") { throw "Install the Windows x64 version of Node.js. The current local database runtime requires x64 Node (including on ARM PCs)." }
+if (-not $Runtime) { $Runtime = "win-x64" }
+if ($Runtime -notin @("win-x64", "win-arm64")) { throw "Only x64 and ARM64 Windows builds are supported." }
+if (-not (Test-Path (Join-Path $ProjectDirectory "node_modules\vinext\dist\cli.js"))) {
+    throw "Dependencies are missing. Run npm.cmd ci in the project folder before building the Windows app."
 }
+$OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$Runtime"
 
-# Create a Windows .ico from the same source artwork used by the macOS Dock.
-# System.Drawing is available in Windows PowerShell and avoids maintaining two
-# independently edited logo files.
+# Use the same artwork as macOS, preserving its proportions on a transparent square.
+# PNG-compressed ICO avoids leaking a native HICON handle during repeated builds.
 Add-Type -AssemblyName System.Drawing
-$source = [System.Drawing.Image]::FromFile($IconSource)
-$bitmap = New-Object System.Drawing.Bitmap 256, 256
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.Clear([System.Drawing.Color]::Transparent)
-$graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-$graphics.DrawImage($source, 0, 0, 256, 256)
-$iconHandle = $bitmap.GetHicon()
-$icon = [System.Drawing.Icon]::FromHandle($iconHandle)
-$stream = [System.IO.File]::Create($IconOutput)
+$Source = [System.Drawing.Image]::FromFile($IconSource)
+$Bitmap = New-Object System.Drawing.Bitmap 256, 256
+$Graphics = [System.Drawing.Graphics]::FromImage($Bitmap)
+$Png = New-Object System.IO.MemoryStream
 try {
-    $icon.Save($stream)
+    $Graphics.Clear([System.Drawing.Color]::Transparent)
+    $Graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $Scale = [Math]::Min(236.0 / $Source.Width, 236.0 / $Source.Height)
+    $Width = [single]($Source.Width * $Scale)
+    $Height = [single]($Source.Height * $Scale)
+    $Bounds = New-Object System.Drawing.RectangleF ([single]((256 - $Width) / 2)), ([single]((256 - $Height) / 2)), $Width, $Height
+    $Graphics.DrawImage($Source, $Bounds)
+    $Bitmap.Save($Png, [System.Drawing.Imaging.ImageFormat]::Png)
+    $Writer = New-Object System.IO.BinaryWriter ([System.IO.File]::Create($IconOutput))
+    try {
+        $Writer.Write([uint16]0); $Writer.Write([uint16]1); $Writer.Write([uint16]1)
+        $Writer.Write([byte]0); $Writer.Write([byte]0); $Writer.Write([byte]0); $Writer.Write([byte]0)
+        $Writer.Write([uint16]1); $Writer.Write([uint16]32)
+        $Writer.Write([uint32]$Png.Length); $Writer.Write([uint32]22)
+        $Writer.Write($Png.ToArray())
+    }
+    finally { $Writer.Dispose() }
 }
 finally {
-    $stream.Dispose()
-    $icon.Dispose()
-    $graphics.Dispose()
-    $bitmap.Dispose()
-    $source.Dispose()
+    $Png.Dispose(); $Graphics.Dispose(); $Bitmap.Dispose(); $Source.Dispose()
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-dotnet publish $WindowsProject `
+& dotnet publish $WindowsProject `
     --configuration Release `
     --runtime $Runtime `
     --self-contained true `
@@ -54,24 +67,24 @@ dotnet publish $WindowsProject `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:PublishTrimmed=false `
     --output $OutputDirectory
+if ($LASTEXITCODE -ne 0) { throw "Windows compilation failed. See the dotnet error above." }
+if (-not (Test-Path (Join-Path $OutputDirectory "PersonalTaskBoard.exe"))) { throw "The Windows executable was not created." }
 
-$instructions = @"
-PersonalTaskBoard for Windows
+$Instructions = @"
+Personal Jira Board for Windows
 
-1. Keep this output folder inside the PersonalTaskBoard repository.
-2. Double-click PersonalTaskBoard.exe.
-3. Put your Jira API token in config/credentials.json or enter it in Connect Jira.
+1. Keep this output folder inside the repository (or set PERSONAL_TASK_BOARD_PROJECT_DIR).
+2. Configure your email and Jira board URL in config/app.json.
+3. Put your Jira API token in config/credentials.json; it is never included in the executable.
+4. Double-click PersonalTaskBoard.exe, or run npm.cmd run windows:start from the repository.
 
-Requirements at runtime:
-- Node.js 22.13 or newer
-- Microsoft Edge WebView2 Runtime (included with current Windows 10/11)
+Runtime requirements: Node.js 22.13+ and Microsoft Edge WebView2 Runtime.
+The .NET runtime is included in this executable.
+Data and offline queue: %LOCALAPPDATA%\PersonalTaskBoard
+Display preferences:   %LOCALAPPDATA%\PersonalJiraBoard\WebView2
+Diagnostics:           %LOCALAPPDATA%\PersonalTaskBoard\Logs\app.log
 
-Personal data: %LOCALAPPDATA%\PersonalTaskBoard\data
-Diagnostics:  %LOCALAPPDATA%\PersonalTaskBoard\Logs\app.log
-
-If the executable is moved outside the repository, set the environment
-variable PERSONAL_TASK_BOARD_PROJECT_DIR to the repository's full path.
+See desktop/windows/README.md for setup, browser mode, upgrades, and ARM64 builds.
 "@
-Set-Content -Path (Join-Path $OutputDirectory "README-Windows.txt") -Value $instructions
-
+Set-Content -Path (Join-Path $OutputDirectory "README-Windows.txt") -Value $Instructions
 Write-Host "Windows app created at: $OutputDirectory\PersonalTaskBoard.exe"

@@ -298,3 +298,14 @@ test("a stale Done snapshot cannot clear a reminder rescheduled after a newer ac
     assert.equal(row.archived, 0); assert.equal(row.notify_at, "2030-01-01"); assert.equal(row.manual_order, 9);
   } finally { db.close(); }
 });
+
+test('Jira completion dates backfill imported history and survive unrelated later edits',()=>{
+ const db=database();try{
+  const completed=issue('KAN-1','done');apply(db,plan(db,[completed]));
+  completed.fields.resolutiondate='2026-10-04T23:30:00.000+0530';completed.fields.statuscategorychangedate='2026-10-04T23:30:00.000+0530';
+  apply(db,plan(db,[completed]));assert.equal(db.prepare('SELECT completed_at FROM tasks').get().completed_at,'2026-10-04T18:00:00.000Z');
+  completed.fields.summary='Later description edit';completed.fields.updated='2026-10-28T09:00:00Z';apply(db,plan(db,[completed]));assert.equal(db.prepare('SELECT completed_at FROM tasks').get().completed_at,'2026-10-04T18:00:00.000Z');
+  const reopened=issue('KAN-1');reopened.fields.updated='2026-10-29T09:00:00Z';apply(db,plan(db,[reopened]));assert.equal(db.prepare('SELECT completed_at FROM tasks').get().completed_at,null);
+  completed.fields.resolutiondate=null;completed.fields.statuscategorychangedate='2026-10-26T01:00:00Z';completed.fields.updated='2026-10-30T09:00:00Z';apply(db,plan(db,[completed]));assert.equal(db.prepare('SELECT completed_at FROM tasks').get().completed_at,'2026-10-26T01:00:00.000Z');
+ }finally{db.close();}
+});

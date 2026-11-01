@@ -29,9 +29,10 @@ export const baseFields = [
 export function jiraFixture() {
   const issues = new Map([issue(), issue("KAN-2")].map((issue) => [issue.key, issue]));
   const calls = [], receipts = new Map(), faults = new Map(), afterFaults = new Map(), excluded = new Set();
+  const properties = new Map();
   const comments = new Map(), files = new Map(), blobs = new Map();
   let ticks = 0, nextKey = 10, nextItem = 100, savedState = null;
-  const state = { identity: { ...identity }, extraFields: [], transitionFields: {}, gatewayOnly: false, offline: false, pause: null };
+  const state = { identity: { ...identity }, extraFields: [], transitionFields: {}, gatewayOnly: false, offline: false, pause: null, areaField: false, areaOnTask: true, areaOnSubtask: true, areaOptions: [{ id: "201", value: "Work" }, { id: "202", value: "Personal" }, { id: "203", value: "Learn" }] };
   const store = {
     readState: async () => structuredClone(savedState),
     writeState: async (value) => { savedState = structuredClone(value); },
@@ -41,6 +42,13 @@ export function jiraFixture() {
   };
   const reply = (value, status = 200) => status === 204 ? new Response(null, { status }) : Response.json(structuredClone(value), { status });
   const updated = () => new Date(Date.parse("2026-10-15T11:00:00Z") + (++ticks) * 1000).toISOString();
+  const areaFieldId = "customfield_123";
+  const areaFields = (subtask) => state.areaField && (subtask ? state.areaOnSubtask : state.areaOnTask) ? [field(areaFieldId, "option", { name: "Area", schema: { type: "option", custom: "com.atlassian.jira.plugin.system.customfieldtypes:select" }, allowedValues: state.areaOptions })] : [];
+  const fillArea = (fields) => {
+    if (!state.areaField) return;
+    const raw = fields[areaFieldId];
+    fields[areaFieldId] = raw ? structuredClone(state.areaOptions.find((option) => option.id === raw.id) || raw) : null;
+  };
   const fetchImpl = async (rawUrl, init = {}) => {
     const url = new URL(rawUrl), path = url.pathname.replace(/^\/ex\/jira\/[^/]+/, ""), method = init.method || "GET";
     const body = init.body instanceof FormData ? init.body : init.body ? JSON.parse(init.body) : null;
@@ -52,8 +60,15 @@ export function jiraFixture() {
     const fault = faults.get(`${method} ${path}`);
     if (fault) { if (fault instanceof Error) throw fault; return reply(fault.payload || { errorMessages: ["Rejected by Jira"] }, fault.status); }
     const finish = (value, status = 200) => { if (afterFaults.delete(`${method} ${path}`)) throw new Error("Response lost after save"); return reply(value, status); };
+    if (path.startsWith("/rest/api/3/user/properties/")) {
+      const key = path.split("/").at(-1);
+      if (url.searchParams.get("accountId") !== accountId) return reply({}, 403);
+      if (method === "PUT") { properties.set(key, structuredClone(body)); return finish(null, 201); }
+      return properties.has(key) ? reply({ key, value: properties.get(key) }) : reply({}, 404);
+    }
     if (path === "/rest/api/3/myself") return reply(state.identity);
     if (path === "/rest/api/3/serverInfo") return reply({ baseUrl: configuredSite });
+    if (path === "/rest/api/3/field") return reply(state.areaField ? [{ id: areaFieldId, name: "Area", custom: true, scope: { type: "PROJECT", project: { id: "10001" } }, schema: { type: "option", custom: "com.atlassian.jira.plugin.system.customfieldtypes:select" } }] : []);
     if (path === "/rest/api/3/status") return reply(statuses);
     if (path === "/rest/api/3/priority") return reply(priorities);
     if (path === "/rest/api/3/issueLinkType") return reply({ issueLinkTypes: linkTypes });
@@ -62,9 +77,10 @@ export function jiraFixture() {
     if (path === "/rest/agile/1.0/board/2/configuration") return reply({ columnConfig: { columns: statuses.map((status) => ({ name: status.name, statuses: [{ id: status.id }] })) } });
     if (path === "/rest/agile/1.0/board/2/project") return reply({ values: [{ id: "10001", key: "KAN", name: "Personal" }], isLast: true });
     if (/\/issue\/createmeta\/10001\/issuetypes$/.test(path)) return reply({ issueTypes: [{ id: "epic", name: "Epic", subtask: false }, { id: "task", name: "Task", subtask: false }, { id: "subtask", name: "Subtask", subtask: true }], isLast: true });
-    if (/\/issue\/createmeta\/10001\/issuetypes\//.test(path)) return reply({ fields: [...baseFields, ...state.extraFields, ...(path.endsWith("/subtask") ? [field("parent", "issuelink", { required: true })] : [])], isLast: true });
+    if (/\/issue\/createmeta\/10001\/issuetypes\//.test(path)) return reply({ fields: [...baseFields, ...state.extraFields, ...areaFields(path.endsWith("/subtask")), ...(path.endsWith("/subtask") ? [field("parent", "issuelink", { required: true })] : [])].filter((entry) => !state.omitCreateLabels || entry.fieldId !== "labels"), isLast: true });
     if (/^\/rest\/(software|agile)\/1\.0\/board\/2\/issue$/.test(path) || path === "/rest/api/3/search/jql") {
       const keys = [...(url.searchParams.get("jql") || "").matchAll(/"([A-Z][A-Z0-9_]*-\d+)"/g)].map((match) => match[1]);
+      if (state.areaField) for (const item of issues.values()) fillArea(item.fields);
       return reply({ issues: [...issues.values()].filter((issue) => !excluded.has(issue.key) && (!keys.length || keys.includes(issue.key))), isLast: true });
     }
     if (path === "/rest/api/3/issue" && method === "POST") {
@@ -73,6 +89,7 @@ export function jiraFixture() {
       created.fields.priority = priorities.find((p) => p.id === body.fields.priority?.id) || created.fields.priority;
       created.fields.issuetype = { id: body.fields.issuetype.id, name: body.fields.issuetype.id === "subtask" ? "Subtask" : "Task", subtask: body.fields.issuetype.id === "subtask" };
       created.properties = Object.fromEntries((body.properties || []).map(({ key, value }) => [key, value]));
+      fillArea(created.fields);
       issues.set(key, created);
       if (created.fields.parent) issues.get(created.fields.parent.key)?.fields.subtasks.push({ key });
       return finish({ key, id: key }, 201);
@@ -121,23 +138,24 @@ export function jiraFixture() {
     if (match) {
       const current = issues.get(match[1]);
       if (!current) return reply({ errorMessages: ["Issue missing"] }, 404);
-      if (match[2] === "editmeta") return reply({ fields: Object.fromEntries([...baseFields, ...state.extraFields].map((field) => [field.fieldId, field])) });
+      if (match[2] === "editmeta") return reply({ fields: Object.fromEntries([...baseFields, ...state.extraFields, ...areaFields(current.fields.issuetype.subtask)].map((field) => [field.fieldId, field])) });
       if (match[2] === "assignee") { current.fields.assignee = body; return finish(null, 204); }
       if (match[2] === "transitions") {
         if (method === "GET") return reply({ transitions: statuses.map((status) => ({ id: `to-${status.id}`, name: status.name, to: status, fields: state.transitionFields })) });
         current.fields.status = structuredClone(statuses.find((status) => `to-${status.id}` === body.transition.id));
         current.fields.updated = updated(); return finish(null, 204);
       }
-      if (method === "PUT") { Object.assign(current.fields, body.fields); if (body.fields.priority) current.fields.priority = priorities.find((p) => p.id === body.fields.priority.id); current.fields.updated = updated(); return finish(null, 204); }
+      if (method === "PUT") { for (const change of body.update?.labels || []) { if (change.add && !current.fields.labels.includes(change.add)) current.fields.labels.push(change.add); if (change.remove) current.fields.labels = current.fields.labels.filter((label) => label !== change.remove); } Object.assign(current.fields, body.fields); fillArea(current.fields); if (body.fields?.priority) current.fields.priority = priorities.find((p) => p.id === body.fields.priority.id); current.fields.updated = updated(); return finish(null, 204); }
       if (method === "DELETE") {
         if ((current.fields.subtasks || []).some((child) => issues.has(child.key))) return reply({ errorMessages: ["Delete subtasks first"] }, 400);
         issues.delete(current.key); return finish(null, 204);
       }
+      fillArea(current.fields);
       return reply(current);
     }
     throw new Error(`Unexpected Jira request: ${method} ${path}`);
   };
   const makeClient = () => new JiraApi("fake-test-token", { fetchImpl, readReceipt: async (id) => receipts.get(id), writeReceipt: async (id, value) => { receipts.set(id, structuredClone(value)); } });
   const makeWorkspace = () => new JiraWorkspace({ store });
-  return { issues, calls, receipts, faults, afterFaults, excluded, state, fetchImpl, makeClient, makeWorkspace, store, blobs, comments, files };
+  return { issues, calls, receipts, faults, afterFaults, excluded, state, fetchImpl, makeClient, makeWorkspace, store, blobs, comments, files, properties };
 }

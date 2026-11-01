@@ -17,6 +17,11 @@ internal sealed class MainForm : Form
     private readonly Uri BoardUri;
     private readonly Uri BoardHealthUri;
     private readonly Uri JiraHealthUri;
+    private readonly string configurationId;
+    private readonly int appProtocolVersion;
+    private readonly int helperProtocolVersion;
+    private readonly HashSet<string> tagShortcutKeys = new(StringComparer.Ordinal);
+    private enum ServiceState { Missing, Ready, Conflict }
 
     private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
     private readonly HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
@@ -30,7 +35,12 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         projectDirectory = FindProjectDirectory();
+        if (!File.Exists(Path.Combine(projectDirectory, "node_modules", "vinext", "dist", "cli.js")))
+            throw new InvalidOperationException("Dependencies are missing. Open a terminal in the project folder and run npm.cmd ci first.");
         using var runtime = ReadRuntimeSettings(projectDirectory);
+        configurationId = runtime.RootElement.GetProperty("configurationId").GetString()!;
+        appProtocolVersion = runtime.RootElement.GetProperty("appProtocolVersion").GetInt32();
+        helperProtocolVersion = runtime.RootElement.GetProperty("helperProtocolVersion").GetInt32();
         DesktopBoardPort = runtime.RootElement.GetProperty("desktopPort").GetInt32();
         BoardUri = new Uri($"http://localhost:{DesktopBoardPort}/");
         BoardHealthUri = new Uri($"http://localhost:{DesktopBoardPort}/api/app-status");
@@ -61,65 +71,78 @@ internal sealed class MainForm : Form
                 browserExecutableFolder: null,
                 userDataFolder: webViewDataDirectory);
             await webView.EnsureCoreWebView2Async(webViewEnvironment);
+            if (closing) return;
             ConfigureNavigation();
+            ConfigureTagShortcuts();
             ShowStatusPage("Starting Personal Jira Board…",
                 "The board and Jira connection are being prepared locally.");
 
-            if (!await IsHealthyAsync(BoardHealthUri))
-            {
-                boardProcess = StartHiddenProcess("node.exe", $"node_modules/vinext/dist/cli.js dev --port {DesktopBoardPort}");
-            }
-            if (!await IsHealthyAsync(JiraHealthUri))
-            {
-                jiraProcess = StartHiddenProcess("node.exe", "local/jira-server.mjs");
-            }
+            // A running local server may belong to an older build or another Jira account.
+            var boardState = await CheckServiceAsync(BoardHealthUri, "appProtocolVersion", appProtocolVersion);
+            var jiraState = await CheckServiceAsync(JiraHealthUri, "protocolVersion", helperProtocolVersion);
+            RequireCompatibleService(boardState, BoardHealthUri.Port);
+            RequireCompatibleService(jiraState, JiraHealthUri.Port);
+            if (closing) return;
+            if (boardState == ServiceState.Missing)
+                boardProcess = StartHiddenProcess("node_modules/vinext/dist/cli.js", "dev", "--port", DesktopBoardPort.ToString(), "--strictPort");
+            if (jiraState == ServiceState.Missing)
+                jiraProcess = StartHiddenProcess("local/jira-server.mjs");
 
             for (var attempt = 0; attempt < 90 && !closing; attempt++)
             {
-                var boardReady = await IsHealthyAsync(BoardHealthUri);
-                var jiraReady = await IsHealthyAsync(JiraHealthUri);
-                if (boardReady && jiraReady)
+                boardState = await CheckServiceAsync(BoardHealthUri, "appProtocolVersion", appProtocolVersion);
+                jiraState = await CheckServiceAsync(JiraHealthUri, "protocolVersion", helperProtocolVersion);
+                RequireCompatibleService(boardState, BoardHealthUri.Port);
+                RequireCompatibleService(jiraState, JiraHealthUri.Port);
+                if (closing) return;
+                // The helper stays healthy when Jira is offline; cached work remains usable.
+                if (boardState == ServiceState.Ready && jiraState == ServiceState.Ready)
                 {
                     webView.Source = BoardUri;
                     return;
                 }
+                if (boardProcess?.HasExited == true || jiraProcess?.HasExited == true)
+                    throw new InvalidOperationException($"A local service stopped. Check {logFile}.");
                 await Task.Delay(1000);
             }
-
-            ShowStatusPage("PersonalTaskBoard could not start",
-                $"Check the diagnostics at {WebUtility.HtmlEncode(logFile)}.");
+            if (!closing) throw new TimeoutException($"The local services did not start in time. Check {logFile}.");
         }
         catch (Exception error)
         {
+            if (closing) return;
+            StopProcess(boardProcess); boardProcess = null;
+            StopProcess(jiraProcess); jiraProcess = null;
             WriteLog($"[windows] Startup failed: {error}");
             var webViewHint = error.Message.Contains("WebView2", StringComparison.OrdinalIgnoreCase)
                 ? " Install or update the Microsoft Edge WebView2 Runtime."
                 : string.Empty;
-            ShowStatusPage("PersonalTaskBoard could not start",
+            ShowStatusPage("Personal Jira Board could not start",
                 $"{WebUtility.HtmlEncode(error.Message)}{webViewHint}");
         }
     }
 
     private void ConfigureNavigation()
     {
+        webView.CoreWebView2.ContentLoading += (_, _) => tagShortcutKeys.Clear();
         webView.CoreWebView2.NavigationStarting += (_, eventArgs) =>
         {
-            if (IsLocalBoardAddress(eventArgs.Uri)) return;
+            if (eventArgs.Uri == "about:blank" || IsLocalBoardAddress(eventArgs.Uri)) return;
             eventArgs.Cancel = true;
             OpenInDefaultBrowser(eventArgs.Uri);
         };
         webView.CoreWebView2.NewWindowRequested += (_, eventArgs) =>
         {
             eventArgs.Handled = true;
-            OpenInDefaultBrowser(eventArgs.Uri);
+            if (IsLocalBoardAddress(eventArgs.Uri))
+                webView.CoreWebView2.Navigate(eventArgs.Uri); // Keep attachment downloads in WebView2.
+            else OpenInDefaultBrowser(eventArgs.Uri);
         };
     }
 
-    private static bool IsLocalBoardAddress(string address)
+    private bool IsLocalBoardAddress(string address)
     {
         if (!Uri.TryCreate(address, UriKind.Absolute, out var uri)) return false;
-        if (uri.Scheme == "about") return true;
-        return uri.Scheme == Uri.UriSchemeHttp &&
+        return uri.Scheme == Uri.UriSchemeHttp && uri.Port == DesktopBoardPort &&
             (uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
              uri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase));
     }
@@ -131,27 +154,91 @@ internal sealed class MainForm : Form
         Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
     }
 
-    private async Task<bool> IsHealthyAsync(Uri uri)
+    private void ConfigureTagShortcuts()
+    {
+        webView.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
+        {
+            if (!IsLocalBoardAddress(eventArgs.Source)) return;
+            try
+            {
+                using var message = JsonDocument.Parse(eventArgs.WebMessageAsJson);
+                var body = message.RootElement;
+                if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("type", out var type) ||
+                    type.ValueKind != JsonValueKind.String || type.GetString() != "task-tag-shortcuts" ||
+                    !body.TryGetProperty("keys", out var keys) || keys.ValueKind != JsonValueKind.Array) return;
+                tagShortcutKeys.Clear();
+                foreach (var key in keys.EnumerateArray())
+                    if (key.ValueKind == JsonValueKind.String && IsTagShortcut(key.GetString()!))
+                        tagShortcutKeys.Add(key.GetString()!);
+            }
+            catch (JsonException) { /* Ignore messages that are not shortcut registrations. */ }
+        };
+        var heldKeys = new HashSet<Keys>();
+        webView.KeyUp += (_, eventArgs) => heldKeys.Remove(eventArgs.KeyCode);
+        webView.LostFocus += (_, _) => heldKeys.Clear();
+        webView.KeyDown += (_, eventArgs) =>
+        {
+            if (eventArgs.Modifiers != Keys.Control) return;
+            var key = (int)eventArgs.KeyCode switch
+            {
+                >= 0x41 and <= 0x5A => ((char)((int)eventArgs.KeyCode + 32)).ToString(),
+                >= 0x30 and <= 0x39 => ((char)eventArgs.KeyCode).ToString(),
+                0xBD => "-", 0xBB => "=", _ => "",
+            };
+            var isTag = tagShortcutKeys.Contains(key);
+            if (!isTag && key != "f") return;
+            // Handle before returning to Chromium, then dispatch outside the synchronous callback.
+            eventArgs.Handled = true;
+            eventArgs.SuppressKeyPress = true;
+            if (!heldKeys.Add(eventArgs.KeyCode)) return;
+            var script = isTag
+                ? $"window.dispatchEvent(new CustomEvent('task-board-tag-shortcut', {{ detail: {JsonSerializer.Serialize(key)} }}))"
+                : "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))";
+            BeginInvoke((MethodInvoker)(async () =>
+            {
+                if (closing || webView.CoreWebView2 is null) return;
+                try { await webView.CoreWebView2.ExecuteScriptAsync(script); }
+                catch (Exception error) { WriteLog($"[windows] Shortcut could not be delivered: {error.Message}"); }
+            }));
+        };
+    }
+
+    private static bool IsTagShortcut(string key) => key.Length == 1 &&
+        "abcdefghijklmnopqrstuvwxyz0123456789-=".Contains(key, StringComparison.Ordinal) &&
+        !"acqvxz".Contains(key, StringComparison.Ordinal);
+
+    private async Task<ServiceState> CheckServiceAsync(Uri uri, string protocolKey, int expectedVersion)
     {
         try
         {
             using var response = await httpClient.GetAsync(uri);
-            return response.IsSuccessStatusCode;
+            if (!response.IsSuccessStatusCode) return ServiceState.Conflict;
+            using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var root = payload.RootElement;
+            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("configId", out var config) &&
+                config.ValueKind == JsonValueKind.String && config.GetString() == configurationId &&
+                root.TryGetProperty(protocolKey, out var version) && version.ValueKind == JsonValueKind.Number &&
+                version.TryGetInt32(out var actual) && actual == expectedVersion
+                ? ServiceState.Ready : ServiceState.Conflict;
         }
-        catch
-        {
-            return false;
-        }
+        catch (HttpRequestException) { return ServiceState.Missing; }
+        catch (TaskCanceledException) { return ServiceState.Missing; }
+        catch (JsonException) { return ServiceState.Conflict; }
     }
 
-    private Process StartHiddenProcess(string executable, string arguments)
+    private static void RequireCompatibleService(ServiceState state, int port)
+    {
+        if (state == ServiceState.Conflict)
+            throw new InvalidOperationException($"Another app or an older build is using local port {port}. Close it, then reopen Personal Jira Board.");
+    }
+
+    private Process StartHiddenProcess(params string[] arguments)
     {
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = executable,
-                Arguments = arguments,
+                FileName = "node.exe",
                 WorkingDirectory = projectDirectory,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -160,15 +247,17 @@ internal sealed class MainForm : Form
             },
             EnableRaisingEvents = true,
         };
+        foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
         process.OutputDataReceived += (_, eventArgs) => WriteLog(eventArgs.Data);
         process.ErrorDataReceived += (_, eventArgs) => WriteLog(eventArgs.Data);
-        process.Exited += (_, _) =>
-            WriteLog($"[windows] {executable} exited with code {process.ExitCode}.");
+        process.Exited += (_, _) => WriteLog("[windows] A local service exited.");
         process.StartInfo.Environment["PORT"] = DesktopBoardPort.ToString();
+        process.StartInfo.Environment["WRANGLER_WRITE_LOGS"] = "false";
+        process.StartInfo.Environment["WRANGLER_LOG_PATH"] = Path.Combine(Path.GetDirectoryName(logFile)!, "wrangler.log");
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
-        WriteLog($"[windows] Started {executable} {arguments}");
+        WriteLog($"[windows] Started node.exe {string.Join(" ", arguments)}");
         return process;
     }
 
@@ -200,7 +289,11 @@ internal sealed class MainForm : Form
 
     private void ShowStatusPage(string heading, string detail)
     {
-        if (webView.CoreWebView2 is null) return;
+        if (webView.CoreWebView2 is null)
+        {
+            MessageBox.Show(this, WebUtility.HtmlDecode(detail), heading, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
         webView.NavigateToString($$"""
             <!doctype html><html><head><meta name="color-scheme" content="light dark">
             <style>
@@ -279,7 +372,7 @@ internal sealed class MainForm : Form
         };
         start.ArgumentList.Add("--input-type=module");
         start.ArgumentList.Add("-e");
-        start.ArgumentList.Add("import { localSettings } from './config/settings.mjs'; console.log(JSON.stringify(localSettings));");
+        start.ArgumentList.Add("import { localSettings, configurationId, appProtocolVersion, helperProtocolVersion } from './config/settings.mjs'; console.log(JSON.stringify({ ...localSettings, configurationId, appProtocolVersion, helperProtocolVersion }));");
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Node.js could not start.");
         if (!process.WaitForExit(10000))
         {

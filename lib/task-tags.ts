@@ -3,6 +3,7 @@ export const personalTagSchema = [
   `CREATE TABLE IF NOT EXISTS personal_tags (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL UNIQUE,
     shortcut TEXT UNIQUE, sort_order INTEGER NOT NULL DEFAULT 0,
+    jira_tag_id TEXT, jira_label TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
   `CREATE TABLE IF NOT EXISTS personal_task_tags (
@@ -10,6 +11,7 @@ export const personalTagSchema = [
     tag_id TEXT NOT NULL REFERENCES personal_tags(id) ON DELETE CASCADE,
     PRIMARY KEY (task_id, tag_id)
   )`,
+  "CREATE TABLE IF NOT EXISTS jira_tag_sync_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL)",
   "CREATE INDEX IF NOT EXISTS personal_task_tags_tag_idx ON personal_task_tags (tag_id)",
 ];
 const reserved = new Set(["a", "c", "q", "v", "x", "z"]);

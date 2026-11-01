@@ -25,6 +25,7 @@ export default defineConfig(async ({ command }) => {
     plugins: [vinext(), cloudflare({
       viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
       config: {
+        ...(process.env.PERSONAL_TASK_BOARD_HELPER_PORT ? { vars: { PERSONAL_TASK_BOARD_HELPER_PORT: process.env.PERSONAL_TASK_BOARD_HELPER_PORT } } : {}),
         main: "./worker/index.ts", compatibility_flags: ["nodejs_compat"],
         d1_databases: [{ binding: "DB", database_name: "personal-tasks", database_id: "00000000-0000-4000-8000-000000000000" }],
       },

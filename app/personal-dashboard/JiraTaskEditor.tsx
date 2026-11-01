@@ -24,7 +24,7 @@ import { cachedTaskEditor } from "../../lib/jira-editor-state";
 
 type Context = JiraEditorContext;
 const CORE = CORE_JIRA_FIELDS;
-const HIDDEN = ["project", "issuetype", "assignee", "reporter"];
+const HIDDEN = ["project", "issuetype", "assignee", "reporter", "labels"];
 const idOf = (value: unknown): string => typeof value === "object" && value ? String((value as { id?: string; value?: string; accountId?: string }).id || (value as { value?: string }).value || (value as { accountId?: string }).accountId || "") : String(value ?? "");
 function initialValue(field: JiraField, raw: unknown): unknown {
   if (raw === undefined) return undefined;
@@ -85,7 +85,8 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   onRenameSubtask?: (task: Task, title: string, baseSummary: string) => Promise<boolean>;
   onAddSubtask?: (parent: Task) => void; onOpenTask?: (id: number) => void; onChanged: () => Promise<void>; position: DetailPosition; onTogglePosition: () => void;
 }) {
-  const [newTagIds, setNewTagIds] = useState<string[]>([]);
+  // null follows the parent's labels until the user customizes this draft.
+  const [newTagIds, setNewTagIds] = useState<string[] | null>(null);
   const [newAreaId, setNewAreaId] = useState<string | null>(parentTask?.areaId || defaultAreaId);
   const [cached] = useState(() => cachedTaskEditor(task, session));
   const [context, setContext] = useState<Context | null>(cached);
@@ -170,28 +171,29 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   }, [context, project, children.length, childContext?.project?.id]);
 
   const isSubtask = task ? Boolean(task.isSubtask || (context?.issue?.fields.issuetype as { subtask?: boolean })?.subtask) : Boolean(parentTask || context?.issueType?.subtask);
-  const fields = (context?.fields || []).filter((field) => !HIDDEN.includes(field.fieldId) && (field.fieldId !== "parent" || (isSubtask && !parentTask)) && (CORE.includes(field.fieldId) || (!task && field.required && !field.hasDefaultValue)))
+  const creationParent = !task ? parentTask || tasks.find((row) => row.jiraKey === values.parent) : undefined;
+  const inheritedTagIds = (creationParent?.tags || []).map((tag) => tag.id);
+  const fields = (context?.fields || []).filter((field) => field.fieldId !== session?.metadata?.areaCatalog?.fieldId && !HIDDEN.includes(field.fieldId) && (field.fieldId !== "parent" || (isSubtask && !parentTask)) && (CORE.includes(field.fieldId) || (!task && field.required && !field.hasDefaultValue)))
     .sort((a, b) => (CORE.indexOf(a.fieldId) < 0 ? 100 : CORE.indexOf(a.fieldId)) - (CORE.indexOf(b.fieldId) < 0 ? 100 : CORE.indexOf(b.fieldId)));
   const transition = context?.transitions?.find((transition) => transition.to.id === target);
   const requiredTransitionFields = transition?.fields.filter((field) => !HIDDEN.includes(field.fieldId) && field.required && !field.hasDefaultValue) || [];
-  const childFields = childContext?.fields.filter((field) => !HIDDEN.includes(field.fieldId) && field.fieldId !== "parent" && (["summary", "description", "priority"].includes(field.fieldId) || (field.required && !field.hasDefaultValue)))
+  const childFields = childContext?.fields.filter((field) => field.fieldId !== session?.metadata?.areaCatalog?.fieldId && !HIDDEN.includes(field.fieldId) && field.fieldId !== "parent" && (["summary", "description", "priority"].includes(field.fieldId) || (field.required && !field.hasDefaultValue)))
     .sort((a, b) => (CORE.indexOf(a.fieldId) < 0 ? 100 : CORE.indexOf(a.fieldId)) - (CORE.indexOf(b.fieldId) < 0 ? 100 : CORE.indexOf(b.fieldId))) || [];
-  const subtasks = new Map<string, NonNullable<Context["subtasks"]>[number]>();
-  if (task) for (const child of orderSubtasks(tasks.filter((child) => child.parentKey === task.jiraKey))) subtasks.set(child.jiraKey, { key: child.jiraKey, summary: child.title, status: child.state || "", syncStatus: child.syncStatus });
-  // The SQL cache resolves temporary Jira keys without changing the task ID.
-  // Mixing its rows with metadata children can briefly show the same child twice.
+  const subtasks = task ? orderSubtasks(tasks.filter((child) => child.parentKey === task.jiraKey)) : [];
+  const activeSubtasks = subtasks.filter((child) => !child.archived), completedSubtasks = subtasks.filter((child) => child.archived);
+  // Use SQL task IDs so temporary Jira keys never duplicate a child.
 
   function draft() {
     if (loading || created.current) return null;
     const normalized = normalizeValues(values, context?.fields || []);
-    const fieldsToSave = Object.fromEntries(Object.entries(normalized).filter(([key, value]) => !HIDDEN.includes(key) && (key !== "parent" || isSubtask) && (!task || JSON.stringify(value) !== JSON.stringify(initial.current[key]))));
+    const fieldsToSave = Object.fromEntries(Object.entries(normalized).filter(([key, value]) => !HIDDEN.includes(key) && key !== session?.metadata?.areaCatalog?.fieldId && (key !== "parent" || isSubtask) && (!task || JSON.stringify(value) !== JSON.stringify(initial.current[key]))));
     const targetStatusId = target && target !== String((rawInitial.current.status as { id?: string })?.id || task?.jiraStatusId) ? target : undefined;
     const reminderFields = notifyAt !== reminderInitial.current || !task ? { notifyAt: notifyAt ? new Date(notifyAt).toISOString() : null } : {};
     const renames = tasks.filter((child) => child.parentKey === task?.jiraKey && subtaskTitles[child.id] !== undefined && subtaskTitles[child.id].trim() !== subtaskInitial.current[child.id])
       .map((child) => ({ task: child, title: subtaskTitles[child.id].trim(), baseSummary: subtaskInitial.current[child.id] }));
     const saveTask = !task || Boolean(Object.keys(fieldsToSave).length || targetStatusId || Object.keys(reminderFields).length);
     if (!saveTask && !renames.length) return null;
-    const payload = task ? { fields: fieldsToSave, baseFields: rawInitial.current, expectedUpdatedAt: rawInitial.current.updated, targetStatusId, transitionFields: normalizeValues(transitionFields, transition?.fields || []) } : { requestId: requestId.current, projectId: project, issueTypeId: issueType, parentKey, areaId: areas.some((area) => area.id === newAreaId) ? newAreaId : null, tagIds: newTagIds.filter((id) => tags.some((tag) => tag.id === id)), fields: fieldsToSave, subtasks: children.map((child) => ({ requestId: child.requestId, fields: normalizeValues(child.fields, childContext?.fields || []) })) };
+    const payload = task ? { fields: fieldsToSave, baseFields: rawInitial.current, expectedUpdatedAt: rawInitial.current.updated, targetStatusId, transitionFields: normalizeValues(transitionFields, transition?.fields || []) } : { requestId: requestId.current, projectId: project, issueTypeId: issueType, parentKey, areaId: areas.some((area) => area.id === newAreaId) ? newAreaId : null, tagIds: newTagIds?.filter((id) => tags.some((tag) => tag.id === id)), fields: fieldsToSave, subtasks: children.map((child) => ({ requestId: child.requestId, fields: normalizeValues(child.fields, childContext?.fields || []) })) };
     return { payload: { ...payload, ...reminderFields }, normalized, notifyAt, status: targetStatusId ? transition?.to : undefined, saveTask, renames };
   }
 
@@ -238,6 +240,18 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   const currentStatusId = String(currentStatus?.id || task?.jiraStatusId || "current");
   const reminderControl = <ReminderField value={task?.archived && !target ? "" : notifyAt} onChange={setNotifyAt} fired={Boolean(task?.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} formId={formId} disabled={busy || loading || Boolean(task?.archived && !target) || transition?.to.category === "done"} />;
   const formActions = <div className="form-actions">{task ? <span className={`save-status save-${autosave.state}`} role="status">{autosave.state === "saving" ? "Saving…" : autosave.state === "error" ? "Not saved · fix the error and retry" : autosave.state === "unsaved" ? "Unsaved changes" : "Changes saved automatically"}</span> : <button type="button" disabled={busy} onClick={onClose}>Cancel</button>}<button type="submit" form={formId} className="primary" disabled={closing || loading || (children.length > 0 && !childContext) || (!task && (!context || Boolean(loadError) || !available))}>{closing ? "Saving…" : task ? autosave.state === "error" ? "Retry save" : "Done" : parentTask ? "Create subtask" : "Create task"}</button></div>;
+  function renderSubtask(row: Task) {
+    return <div className={`subtask-row ${row.archived ? "subtask-done" : ""}`} key={row.id} data-task-key={row.jiraKey}>
+      <div className="subtask-identity">
+        <div className="subtask-edit-line"><JiraTaskLink jiraKey={row.jiraKey} disabled={closing} onOpen={() => void leave(() => onOpenTask?.(row.id))} /><span className="subtask-separator" aria-hidden="true">|</span>
+        {onRenameSubtask ? <input className="subtask-inline-title" aria-label={`Subtask title (${row.jiraKey})`} title="Rename subtask" form={formId} required maxLength={255} disabled={busy || loading || !available} value={subtaskTitles[row.id] ?? row.title} onChange={(event) => {
+          if (!(row.id in subtaskInitial.current)) subtaskInitial.current[row.id] = row.title;
+          setSubtaskTitles((current) => ({ ...current, [row.id]: event.target.value }));
+        }} onBlur={() => void autosave.flush()} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void autosave.flush(); } }} /> : <span className="subtask-title">{row.title}</span>}</div>
+        <div className="subtask-meta"><small>{row.archived ? "✓ " : ""}{row.state}{row.syncStatus !== "synced" ? " · Pending sync" : ""}</small><WebJiraLink jiraKey={row.jiraKey} href={row.jiraUrl} /></div>
+      </div>
+    </div>;
+  }
   return <TaskModal position={position} onTogglePosition={onTogglePosition} title={task ? `${task.jiraUrl ? task.jiraKey : "Pending task"} · Task details` : parentTask ? "New subtask" : "New task"} busy={closing || (busy && autosave.state !== "saving")} onClose={() => void leave()}>
     <form ref={form} id={formId} onSubmit={submit}>
       {serverError || loadError ? <p className="notice error" role="alert">{loadError || serverError}</p> : null}
@@ -260,25 +274,12 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
       {requiredTransitionFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={transitionFields[field.fieldId]} accountId={context?.accountId || ""} disabled={busy} onChange={(value) => setTransitionFields((current) => ({ ...current, [field.fieldId]: value }))} />)}
       </fieldset>
       <TaskArea areas={areas} value={task ? task.areaId : isSubtask ? (parentTask || tasks.find((row) => row.jiraKey === values.parent))?.areaId || null : newAreaId} inherited={isSubtask} disabled={busy} onManage={onManageAreas} onChange={(id) => { if (task) onSetArea(task, id); else setNewAreaId(id); }} />
-      <TaskTags tags={tags} selected={task ? (task.tags || []).map((tag) => tag.id) : newTagIds} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={task ? taggingId === task.id : busy} onChange={(id, assigned) => { if (task) onSetTaskTag(task, id, assigned); else if (!busy) setNewTagIds((current) => assigned ? [...new Set([...current, id])] : current.filter((item) => item !== id)); }} />
+      <TaskTags tags={tags} selected={task ? (task.tags || []).map((tag) => tag.id) : newTagIds ?? inheritedTagIds} onManage={onManageTags} shortcutsEnabled={tagShortcutsEnabled} disabled={task ? taggingId === task.id : busy} onChange={(id, assigned) => { if (task) onSetTaskTag(task, id, assigned); else if (!busy) setNewTagIds((current) => assigned ? [...new Set([...(current ?? inheritedTagIds), id])] : (current ?? inheritedTagIds).filter((item) => item !== id)); }} />
       {!task && !isSubtask && context?.issueTypes?.some((type) => type.subtask) ? <section className="subtasks-section"><h3>Subtasks</h3>{children.map((child, index) => <fieldset className="subtask-draft" key={child.requestId} disabled={busy}><div className="section-heading"><strong>Subtask {index + 1}</strong><button type="button" className="danger" onClick={() => setChildren((current) => current.filter((entry) => entry.requestId !== child.requestId))}>Remove subtask</button></div>{childFields.length ? childFields.map((field) => <JiraFieldInput key={field.fieldId} field={field} value={child.fields[field.fieldId]} autoFocus={field.fieldId === "summary"} accountId={context.accountId} disabled={busy} onChange={(value) => setChildren((current) => current.map((entry) => entry.requestId === child.requestId ? { ...entry, fields: { ...entry.fields, [field.fieldId]: value } } : entry))} />) : <p role="status">Loading subtask fields…</p>}</fieldset>)}<button type="button" disabled={busy || loading} onClick={() => setChildren((current) => [...current, { requestId: crypto.randomUUID(), fields: { ...(childContext ? defaultValues(childContext.fields, values.priority) : {}), ...(values.priority ? { priority: values.priority } : {}) } }])}>+ Add subtask</button></section> : null}
       {!task ? reminderControl : null}
 
     </form>
-    {task && !isSubtask ? <section className="subtasks-section"><div className="section-heading"><h3>Subtasks ({subtasks.size})</h3><button type="button" disabled={busy || loading || !available} onClick={() => void leave(() => onAddSubtask?.(task))}>+ Add subtask</button></div>{[...subtasks.values()].map((child) => {
-      const row = tasks.find((task) => task.jiraKey === child.key);
-      const jiraUrl = row?.jiraUrl || (task.jiraUrl && /^[A-Z][A-Z0-9_]*-\d+$/.test(child.key) ? new URL(`/browse/${child.key}`, task.jiraUrl).href : "");
-      return <div className={`subtask-row ${row?.archived ? "subtask-done" : ""}`} key={child.key}>
-        <div className="subtask-identity">
-          <div className="subtask-edit-line"><JiraTaskLink jiraKey={child.key} disabled={closing} onOpen={row ? () => void leave(() => onOpenTask?.(row.id)) : undefined} /><span className="subtask-separator" aria-hidden="true">|</span>
-          {row && onRenameSubtask ? <input className="subtask-inline-title" aria-label={`Subtask title (${child.key})`} title="Rename subtask" form={formId} required maxLength={255} disabled={busy || loading || !available} value={subtaskTitles[row.id] ?? child.summary} onChange={(event) => {
-            if (!(row.id in subtaskInitial.current)) subtaskInitial.current[row.id] = row.title;
-            setSubtaskTitles((current) => ({ ...current, [row.id]: event.target.value }));
-          }} onBlur={() => void autosave.flush()} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void autosave.flush(); } }} /> : <span className="subtask-title">{child.summary}</span>}</div>
-          <div className="subtask-meta"><small>{row?.archived ? "✓ " : ""}{child.status}{child.syncStatus !== "synced" ? " · Pending sync" : ""}</small><WebJiraLink jiraKey={child.key} href={jiraUrl} /></div>
-        </div>
-      </div>;
-    })}{!subtasks.size ? <p className="muted">No subtasks yet.</p> : null}</section> : null}
+    {task && !isSubtask ? <section className="subtasks-section"><div className="section-heading"><h3>Subtasks ({subtasks.length})</h3><button type="button" disabled={busy || loading || !available} onClick={() => void leave(() => onAddSubtask?.(task))}>+ Add subtask</button></div>{activeSubtasks.map(renderSubtask)}{completedSubtasks.length ? <details className="completed-subtasks"><summary>Completed subtasks ({completedSubtasks.length})</summary>{completedSubtasks.map(renderSubtask)}</details> : null}{!subtasks.length ? <p className="muted">No subtasks yet.</p> : null}</section> : null}
     {task ? <JiraActivity task={task} tasks={tasks} onChanged={onChanged} onOpenTask={(id) => void leave(() => onOpenTask?.(id))} afterComments={reminderControl} beforeAttachments={formActions} /> : null}
     {!task ? dueControl : null}
     {!task ? formActions : null}
