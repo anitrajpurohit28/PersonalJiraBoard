@@ -1,0 +1,21 @@
+local/jira-api.mjs
+  s_e0d1ae70248d00::t_0b2629fc014a45 1-2,76,144-148,152-181,187,218,223,252,304-335
+tests/jira-areas.test.mjs
+  s_e0d1ae70248d00::t_c165136fdadd2e 1-252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "96c807c4db0816c19fcf58b247d256539cc0381a",
+  "prompts": {},
+  "sessions": {
+    "s_e0d1ae70248d00": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a16a27-3ce9-7422-ae22-87722086c24a",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anit Babulal <anit.babulal@zoom.us>"
+    }
+  }
+}
