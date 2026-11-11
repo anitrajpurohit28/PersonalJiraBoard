@@ -138,7 +138,7 @@ test("legacy Area color settings are accepted while the UI uses a uniform highli
 const sortedGroups = (rows, sort, view = "active", today = "2026-10-18") => sortTaskGroups(filterTaskGroups(groupBoardTasks(rows), filters({ view }), today), sort, today);
 const groupIds = (groups) => groups.map((group) => group.parent?.id ?? group.children[0].id);
 
-test("Priority ignores urgency overrides while Days keeps overdue dates and fired reminders first", () => {
+test("Fired reminders lead Priority and Days; overdue dates only affect Days", () => {
   const rows = [
     task(1, { priority: 2, createdAt: "2026-10-01" }),
     task(2, { createdAt: "2026-10-02", dueDate: "2026-10-18" }),
@@ -146,8 +146,8 @@ test("Priority ignores urgency overrides while Days keeps overdue dates and fire
     task(4, { priority: 4, createdAt: "2026-10-17", notifyAt: "2026-10-17T06:00:00Z", notifyFired: true }),
     task(5, { priority: 4, createdAt: "2026-09-30", dueDate: "2026-10-19" }),
   ];
-  assert.deepEqual(groupIds(sortedGroups(rows, "priority")), [1, 2, 5, 3, 4]);
-  assert.deepEqual(groupIds(sortedGroups(rows, "oldest")), [3, 4, 5, 1, 2]);
+  assert.deepEqual(groupIds(sortedGroups(rows, "priority")), [4, 1, 2, 5, 3]);
+  assert.deepEqual(groupIds(sortedGroups(rows, "oldest")), [4, 3, 5, 1, 2]);
 });
 
 test("a due date becomes overdue after its local calendar day, including a year boundary", () => {
@@ -156,25 +156,25 @@ test("a due date becomes overdue after its local calendar day, including a year 
   assert.deepEqual(groupIds(sortedGroups(rows, "oldest", "active", "2027-01-01")), [2, 1]);
 });
 
-test("fired reminders remain first in Days until cleared, but never override High-first Priority", () => {
-  const high = task(1, { priority: 2, createdAt: "2026-01-01" });
-  const reminder = task(2, { priority: 4, createdAt: "2026-10-17", notifyAt: "2026-10-16T06:00:00Z", notifyFired: true });
-  for (const sort of ["priority", "oldest"]) {
-    assert.deepEqual(groupIds(sortedGroups([high, reminder], sort)), sort === "priority" ? [1, 2] : [2, 1]);
+test("fired reminders remain first in every sort until cleared", () => {
+  const high = task(1, { priority: 2, manualOrder: 0, createdAt: "2026-01-01" });
+  const reminder = task(2, { priority: 4, manualOrder: 1, createdAt: "2026-10-17", notifyAt: "2026-10-16T06:00:00Z", notifyFired: true });
+  for (const sort of ["priority", "oldest", "manual"]) {
+    assert.deepEqual(groupIds(sortedGroups([high, reminder], sort)), [2, 1]);
     assert.deepEqual(groupIds(sortedGroups([high, { ...reminder, notifyAt: null }], sort)), [1, 2]);
     assert.deepEqual(groupIds(sortedGroups([high, { ...reminder, notifyAt: "2026-10-20T06:00:00Z", notifyFired: false }], sort)), [1, 2]);
     assert.deepEqual(groupIds(sortedGroups([high, { ...reminder, notifyFired: false }], sort)), [1, 2]);
   }
 });
 
-test("urgent subtasks lift the parent only in Days, without shuffling the child list or mutating the cache", () => {
+test("fired subtasks lead their parent group and child list in every sort without mutating the cache", () => {
   for (const urgent of [{ dueDate: "2026-10-17" }, { notifyAt: "2026-10-17T06:00:00Z", notifyFired: true }]) {
     const rows = [task(1, { priority: 4, createdAt: "2026-10-17" }), task(2, { priority: 2, createdAt: "2026-01-01" }), task(3, { parentKey: "KAN-1" }), task(4, { parentKey: "KAN-1", priority: 4, ...urgent })];
     const groups = filterTaskGroups(groupBoardTasks(rows), filters());
     for (const sort of ["priority", "oldest"]) {
       const sorted = sortTaskGroups(groups, sort, "2026-10-18");
-      assert.deepEqual(groupIds(sorted), sort === "priority" ? [2, 1] : [1, 2]);
-      assert.deepEqual(sorted.find((group) => group.parent.id === 1).children.map((child) => child.id), [3, 4]);
+      assert.deepEqual(groupIds(sorted), urgent.notifyFired || sort === "oldest" ? [1, 2] : [2, 1]);
+      assert.deepEqual(sorted.find((group) => group.parent.id === 1).children.map((child) => child.id), urgent.notifyFired ? [4, 3] : [3, 4]);
       assert.equal(sorted.length, 2);
       assert.deepEqual(groups[0].children.map((child) => child.id), [3, 4]);
     }
@@ -194,7 +194,7 @@ test("urgent orphaned subtasks stay grouped and lift only in Days", () => {
   for (const sort of ["priority", "oldest"]) assert.deepEqual(groupIds(sortedGroups(rows, sort)), sort === "priority" ? [1, 2] : [2, 1]);
 });
 
-test("Reminders honors strict Priority or urgent-first Days", () => {
+test("Reminders puts fired alarms before the remaining Priority or overdue-first Days order", () => {
   const rows = [
     task(1, { priority: 4, createdAt: "2026-10-10", notifyAt: "2026-10-19T06:00:00Z" }),
     task(2, { priority: 4, createdAt: "2026-10-09", dueDate: "2026-10-17", notifyAt: "2026-11-01T06:00:00Z" }),
@@ -202,7 +202,7 @@ test("Reminders honors strict Priority or urgent-first Days", () => {
     task(4, { priority: 2, createdAt: "2026-10-19", notifyAt: "2026-10-20T06:00:00Z" }),
   ];
   assert.deepEqual(groupIds(sortedGroups(rows, "priority", "reminders")), [3, 4, 2, 1]);
-  assert.deepEqual(groupIds(sortedGroups(rows, "oldest", "reminders")), [2, 3, 1, 4]);
+  assert.deepEqual(groupIds(sortedGroups(rows, "oldest", "reminders")), [3, 2, 1, 4]);
 });
 
 test("age counts full elapsed days, includes the exact 24-hour boundary, and never goes below zero", () => {
@@ -241,14 +241,14 @@ test("Days sorting agrees with Jira age badges while overdue tasks still stay fi
 });
 
 
-test("Priority sorts all High before all Medium before all Low, ignoring urgency and manual ranks", () => {
+test("After fired reminders, Priority sorts High before Medium before Low, ignoring due dates and manual ranks", () => {
   const rows = [
     task(1, { priority: 4, dueDate: "2026-10-17", manualOrder: 0 }),
     task(2, { priority: 3, notifyAt: "2026-10-17T06:00:00Z", notifyFired: true, manualOrder: 1 }),
     task(3, { priority: 2, dueDate: "2026-10-17", manualOrder: 2 }),
     task(4, { priority: 4, manualOrder: 3 }), task(5, { priority: 3, manualOrder: 4 }), task(6, { priority: 2, manualOrder: 5 }),
   ];
-  assert.deepEqual(groupIds(sortedGroups(rows, "priority")), [3, 6, 2, 5, 1, 4]);
+  assert.deepEqual(groupIds(sortedGroups(rows, "priority")), [2, 3, 6, 5, 1, 4]);
 });
 
 test("manual sorting respects dragged positions; choosing either automatic mode reapplies its urgency and sort rules", () => {
@@ -295,7 +295,7 @@ test("Priority sorts High then Medium then Low, oldest-created first inside ever
   assert.deepEqual(rows, original);
 });
 
-test("overdue parents, fired reminders and urgent children cannot outrank a higher priority or older peer", () => {
+test("fired reminders outrank older peers while overdue dates cannot override Priority", () => {
   const rows = [
     task(1, { priority: 2, createdAt: "2026-01-01" }),
     task(2, { priority: 2, createdAt: "2026-10-17", notifyAt: "2026-10-16T06:00:00Z", notifyFired: true }),
@@ -303,7 +303,7 @@ test("overdue parents, fired reminders and urgent children cannot outrank a high
     task(4, { parentKey: "KAN-3", dueDate: "2026-10-16" }),
     task(5, { priority: 3, createdAt: "2026-01-01", dueDate: "2026-10-16" }),
   ];
-  assert.deepEqual(groupIds(sortedGroups(rows, "priority")), [1, 3, 2, 5]);
+  assert.deepEqual(groupIds(sortedGroups(rows, "priority")), [2, 1, 3, 5]);
 });
 
 test("legacy High priorities share one age order and equivalent timezones use stable oldest IDs", () => {
@@ -444,4 +444,18 @@ test("board bulk selection excludes hidden completed children, and includes them
   const orphan = filterTaskGroups(groupBoardTasks([completed]), filters({ view: "done" }))[0];
   assert.deepEqual(selectableGroupTasks(orphan, false), []);
   assert.deepEqual(selectableGroupTasks(orphan, true).map((row) => row.id), [3]);
+});
+
+
+test("fired children override manual positions but clearing restores saved child and parent ranks", () => {
+  const high = task(1, { priority: 2, manualOrder: 0 });
+  const parent = task(2, { priority: 4, manualOrder: 1 });
+  const first = task(3, { parentKey: "KAN-2", manualOrder: 0 });
+  const fired = task(4, { parentKey: "KAN-2", manualOrder: 1, notifyAt: "2026-10-16T06:00:00Z", notifyFired: true });
+  const sorted = sortedGroups([high, parent, first, fired], "manual");
+  assert.deepEqual(groupIds(sorted), [2, 1]);
+  assert.deepEqual(sorted[0].children.map(row => row.id), [4, 3]);
+  const cleared = sortedGroups([high, parent, first, { ...fired, notifyAt: null }], "manual");
+  assert.deepEqual(groupIds(cleared), [1, 2]);
+  assert.deepEqual(cleared[1].children.map(row => row.id), [3, 4]);
 });

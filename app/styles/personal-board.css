@@ -342,3 +342,77 @@ button.tag-filter-reset[aria-pressed=true],
 .header-actions > .view-filter[aria-pressed=true] {
   background: var(--selected-bg); color: var(--selected-text); border-color: var(--selected-border); box-shadow: none;
 }
+
+.task-context-menu { position: fixed; z-index: 1000; box-sizing: border-box; width: min(292px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 8px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 12px 40px #0003, 0 2px 6px #0001; }
+.task-context-menu header { padding: 6px 7px 10px; display: grid; gap: 4px; border-bottom: 1px solid var(--divider); }
+.task-context-menu header small { color: var(--link); font-size: 11px; font-weight: 650; }
+.task-context-menu header strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-context-menu section { padding: 5px 0; }
+.task-context-menu h3 { margin: 4px 7px 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.context-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.context-options button { min-height: 30px; padding: 6px 8px; font-size: 11px; background: var(--field); }
+.context-options button[aria-pressed=true] { background: var(--selected-bg); color: var(--selected-text); border-color: var(--selected-border); }
+.task-context-menu .context-action { width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 34px; margin: 2px 0; padding: 8px 7px; font-size: 12px; text-align: left; color: var(--text); border: 0; background: transparent; text-decoration: none; }
+.task-context-menu .context-action:hover, .context-options button:hover:not([aria-pressed=true]) { background: var(--hover); }
+.task-context-menu .context-actions { border-top: 1px solid var(--divider); margin-top: 5px; }
+.task-context-menu .context-delete { border-top: 1px solid var(--divider); border-radius: 0 0 7px 7px; color: var(--danger-text); }
+.task-context-menu .context-delete:hover { background: var(--danger-bg); }
+.context-hint { margin: 4px 7px; color: var(--muted); font-size: 11px; }
+.task-context-menu section[aria-label="Priority"] .context-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.task-date-field { max-width: 360px; }
+.date-field-label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--secondary); }
+.date-field-row { display: flex; align-items: center; gap: 8px; }
+.reminder-fired-message { display: block; color: var(--danger-text); margin-top: 7px; font-size: 11px; }
+
+/* Compact companion-board calendar and scrolling 12-hour time picker. */
+.reminder-picker-field { display: inline-flex; align-items: center; max-width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.reminder-picker-field .reminder-datetime { width: 200px; max-width: 100%; min-width: 0; padding: 6px 8px; border: 0; background: transparent; font-size: 12px; }
+.reminder-picker-toggle { flex: 0 0 28px; min-height: 30px; padding: 0; border: 0; border-left: 1px solid var(--divider); border-radius: 0 8px 8px 0; background: transparent; }
+.reminder-popover { position: fixed; z-index: 1000; width: max-content; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 28px #0003; }
+.reminder-popover-body, .modal-content .reminder-popover-body { display: flex; gap: 10px; align-items: stretch; padding: 0; margin: 0; border: 0; }
+.reminder-calendar { width: 212px; max-width: calc(100vw - 42px); }
+.reminder-calendar-nav { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 8px; }
+.reminder-calendar-nav span { font-size: 12px; font-weight: 700; }
+.reminder-calendar-nav button, .reminder-time-nudge button { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; color: var(--secondary); background: var(--field); font-size: 12px; }
+.reminder-calendar-weekdays, .reminder-calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.reminder-calendar-weekdays { margin-bottom: 4px; font-size: 10px; color: var(--muted); }
+.reminder-calendar-weekdays span, .reminder-day { display: inline-flex; justify-content: center; align-items: center; height: 26px; }
+.reminder-calendar-grid .reminder-day { padding: 0; border: 0; border-radius: 50%; background: transparent; font-size: 11px; color: var(--text); }
+.reminder-calendar-grid .reminder-day:hover { background: var(--hover); }
+.reminder-day[aria-pressed=true], .reminder-period-toggle button[aria-pressed=true], .reminder-time-list button[aria-selected=true] { color: var(--selected-text); background: var(--selected-bg); border-color: var(--selected-border); }
+.reminder-calendar-grid .reminder-day[aria-pressed=true] { color: var(--selected-text); background: var(--selected-bg); }
+.reminder-time-panel { display: flex; flex-direction: column; gap: 4px; width: 100px; }
+.reminder-time-nudge, .reminder-time-cols, .reminder-period-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.reminder-time-nudge { justify-items: center; }
+.reminder-time-list { position: relative; height: 152px; overflow-x: hidden; overflow-y: auto; border: 1px solid var(--divider); border-radius: 8px; background: var(--field); overscroll-behavior: contain; }
+.reminder-time-list button { display: block; width: 100%; padding: 5px 0; border: 0; border-radius: 0; color: var(--text); background: transparent; font-size: 12px; text-align: center; }
+.reminder-time-list button[aria-selected=true] { background: var(--selected-bg); color: var(--selected-text); }
+.reminder-period-toggle button { height: 26px; padding: 0; font-size: 10px; font-weight: 700; }
+.reminder-popover-footer { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--divider); }
+.reminder-popover-footer .reminder-time-type { display: grid; gap: 4px; flex: 1; margin: 0; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+.reminder-time-type input { width: 100%; min-height: 30px; padding: 5px 8px; font-size: 12px; text-transform: none; }
+.reminder-popover-done { padding: 6px 10px; font-size: 11px; }
+.date-picker-error { color: var(--danger-text); font-size: 11px; max-width: 320px; margin: 8px 0 0; }
+@media(max-width: 370px) { .reminder-calendar { width: 185px; } .reminder-time-panel { width: 86px; } .reminder-popover-body { gap: 6px; } .reminder-picker-field .reminder-datetime { width: 170px; } .date-field-clear { padding: 5px; font-size: 10px; } }
+
+.date-only .reminder-picker-field .reminder-datetime { width: 112px; }
+
+.description-format { display: inline-flex; flex-shrink: 0; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--group); margin-left: auto; }
+.description-format button { padding: 4px 8px; border-color: transparent; font-size: 11px; background: transparent; }
+.description-format button[aria-pressed=true] { background: var(--selected-bg); color: var(--selected-text); border-color: var(--selected-border); }
+.description-label { font-size: 12px; font-weight: 600; color: var(--secondary); }
+.description-checklist { margin-bottom: 16px; }
+.description-checklist-items { border: 1px solid var(--border); border-radius: 8px; background: var(--field); padding: 4px 8px; }
+.description-checklist-row { display: flex; align-items: flex-start; gap: 9px; padding: 5px 0; border-bottom: 1px solid var(--divider); }
+.description-checklist-row:last-child { border-bottom: 0; }
+.description-checklist-row > input[type=checkbox] { flex-shrink: 0; margin-top: 9px; }
+.checklist-item-content { flex: 1; min-width: 0; }
+.checklist-item-content > input { width: 100%; border-color: transparent; background: transparent; padding: 7px 4px; }
+.checklist-done .checklist-item-content > input { text-decoration: line-through; color: var(--muted); }
+.description-checklist .checklist-remove { flex-shrink: 0; padding: 4px 6px; margin-top: 4px; border: 0; color: var(--muted); background: transparent; }
+.description-checklist .checklist-remove:hover { background: var(--danger-bg); color: var(--danger-text); }
+.description-checklist .checklist-add { margin-top: 7px; padding: 5px 9px; font-size: 11px; }
+
+.description-heading { flex-wrap: wrap; }
+.checklist-done .draft-links a { text-decoration: line-through; color: var(--muted); }

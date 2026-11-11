@@ -11,6 +11,7 @@ import { JiraActivity } from "./JiraActivity";
 import { WorkflowButtons } from "./WorkflowButtons";
 import { ChoiceButtons } from "./ChoiceButtons";
 import { useTaskAutosave } from "./useTaskAutosave";
+import { TaskDateField } from "./TaskDateField";
 import { ReminderField } from "./ReminderField";
 import { JiraTaskLink, WebJiraLink } from "./JiraTaskLink";
 import type { DetailPosition } from "./useDetailPosition";
@@ -19,6 +20,7 @@ import { TaskTags } from "./TaskTags";
 import type { TaskTag } from "../../lib/task-tags";
 import type { TaskArea as Area } from "../../lib/task-areas";
 import { TaskArea } from "./TaskArea";
+import { DescriptionField } from "./DescriptionField";
 import { LinkedTextField } from "./LinkedText";
 import { cachedTaskEditor } from "../../lib/jira-editor-state";
 
@@ -68,6 +70,7 @@ export function JiraFieldInput({ field, value, onChange, accountId, disabled, cu
       {!multiple ? <option value="">{field.hasDefaultValue ? "Jira default" : "Choose…"}</option> : null}{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
     </select></label>;
   }
+  if (field.fieldId === "description") return <DescriptionField label={label} value={String(value || "")} required={required} disabled={disabled} onChange={onChange} />;
   if (["description", "environment"].includes(field.fieldId) || field.schema.custom?.endsWith(":textarea")) return <LinkedTextField label={label} value={String(value || "")} required={required} disabled={disabled} onChange={onChange} />;
   if (field.schema.type === "boolean") return <label><input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /> {label}</label>;
   const isNumber = ["number", "integer"].includes(field.schema.type || "");
@@ -238,7 +241,7 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
   const fieldBusy = busy && autosave.state !== "saving";
   const formId = useId();
   const dueField = fields.find((field) => field.fieldId === "duedate");
-  const dueControl = dueField ? <section className="task-due-section" aria-label="Due date"><JiraFieldInput field={dueField} value={values.duedate} formId={formId} accountId={context?.accountId || ""} disabled={fieldBusy || loading || !available || Boolean(loadError)} onChange={(value) => { dirty.current = true; setValues((current) => ({ ...current, duedate: value })); }} /></section> : null;
+  const dueControl = dueField ? <section className="task-due-section" aria-label="Due date"><TaskDateField label="Due date" value={String(values.duedate || "")} required={dueField.required && !dueField.hasDefaultValue} disabled={fieldBusy || loading || !available || Boolean(loadError)} onChange={(value) => { dirty.current = true; setValues((current) => ({ ...current, duedate: value })); }} /></section> : null;
   const currentStatus = context?.issue?.fields.status as { id?: string; name?: string } | undefined;
   const currentStatusId = String(currentStatus?.id || task?.jiraStatusId || "current");
   const reminderControl = <ReminderField value={task?.archived && !target ? "" : notifyAt} onChange={setNotifyAt} fired={Boolean(task?.notifyFired && task.notifyAt && localDateTime(task.notifyAt) === notifyAt)} formId={formId} disabled={fieldBusy || loading || Boolean(task?.archived && !target) || transition?.to.category === "done"} />;
@@ -283,11 +286,10 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
 
     </form>
     {task && !isSubtask ? <section className="subtasks-section"><div className="section-heading"><h3>Subtasks ({subtasks.length})</h3><button type="button" disabled={fieldBusy || loading || !available} onClick={() => void leave(() => onAddSubtask?.(task))}>+ Add subtask</button></div>{activeSubtasks.map(renderSubtask)}{completedSubtasks.length ? <details className="completed-subtasks"><summary>Completed subtasks ({completedSubtasks.length})</summary>{completedSubtasks.map(renderSubtask)}</details> : null}{!subtasks.length ? <p className="muted">No subtasks yet.</p> : null}</section> : null}
-    {task ? <JiraActivity task={task} tasks={tasks} onChanged={onChanged} onOpenTask={(id) => void leave(() => onOpenTask?.(id))} afterComments={reminderControl} beforeAttachments={formActions} /> : null}
+    {task ? <JiraActivity task={task} tasks={tasks} onChanged={onChanged} onOpenTask={(id) => void leave(() => onOpenTask?.(id))} afterComments={reminderControl} beforeAttachments={<>{dueControl}{formActions}{onDelete ? <section className="delete-task-section"><button type="button" className="danger" disabled={busy} onClick={() => void onDelete()}>Delete task</button></section> : null}</>} /> : null}
     {!task ? dueControl : null}
     {!task ? formActions : null}
-    {task ? dueControl : null}
-    {onDelete ? <section className="delete-task-section"><button type="button" className="danger" disabled={busy} onClick={() => void onDelete()}>Delete task</button></section> : null}
+
   </TaskModal>;
 }
 

@@ -97,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // to prepare its D1 database. Limiting retries prevents an endless blank
     // window if Node, npm, or another local service has a real problem.
     private var startupAttempts = 0
+    private var taskSounds: [String: NSSound] = [:]
     private var logHandle: FileHandle?
     private var serviceMonitorTimer: Timer?
 
@@ -232,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let configuration = WKWebViewConfiguration()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.userContentController.add(self, name: "taskTagShortcuts")
+        configuration.userContentController.add(self, name: "taskSounds")
         webView = TagShortcutWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -251,10 +253,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "taskTagShortcuts", message.frameInfo.isMainFrame,
+        guard message.frameInfo.isMainFrame,
               let origin = message.webView?.url, origin.scheme == "http",
-              origin.host == "localhost", origin.port == desktopBoardPort,
-              let keys = message.body as? [String] else { return }
+              origin.host == "localhost", origin.port == desktopBoardPort else { return }
+        if message.name == "taskSounds", let name = message.body as? String, ["complete", "reminder"].contains(name) {
+            if taskSounds[name] == nil {
+                taskSounds[name] = NSSound(contentsOf: projectDirectory.appendingPathComponent("public/sounds/\(name).wav"), byReference: false)
+            }
+            taskSounds[name]?.stop()
+            taskSounds[name]?.play()
+            return
+        }
+        guard message.name == "taskTagShortcuts", let keys = message.body as? [String] else { return }
         let reserved: Set<String> = ["a", "c", "q", "v", "x", "z"]
         webView.tagShortcutKeys = Set(keys.filter {
             $0.range(of: "^[a-z0-9=-]$", options: .regularExpression) != nil && !reserved.contains($0)

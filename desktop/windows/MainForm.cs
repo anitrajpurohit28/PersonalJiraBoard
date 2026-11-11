@@ -20,6 +20,7 @@ internal sealed class MainForm : Form
     private readonly string configurationId;
     private readonly int appProtocolVersion;
     private readonly int helperProtocolVersion;
+    private readonly Dictionary<string, System.Media.SoundPlayer> taskSounds = new();
     private readonly HashSet<string> tagShortcutKeys = new(StringComparer.Ordinal);
     private enum ServiceState { Missing, Ready, Conflict }
 
@@ -163,6 +164,21 @@ internal sealed class MainForm : Form
             {
                 using var message = JsonDocument.Parse(eventArgs.WebMessageAsJson);
                 var body = message.RootElement;
+                if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("type", out var soundType) &&
+                    soundType.ValueKind == JsonValueKind.String && soundType.GetString() == "task-sound")
+                {
+                    if (!body.TryGetProperty("name", out var soundName) || soundName.ValueKind != JsonValueKind.String) return;
+                    var name = soundName.GetString();
+                    if (name is not ("complete" or "reminder")) return;
+                    try {
+                        if (!taskSounds.TryGetValue(name, out var player)) {
+                            player = new System.Media.SoundPlayer(Path.Combine(projectDirectory, "public", "sounds", $"{name}.wav"));
+                            player.Load(); taskSounds[name] = player;
+                        }
+                        player.Stop(); player.Play();
+                    } catch (Exception error) { WriteLog($"[windows] Sound unavailable: {error.Message}"); }
+                    return;
+                }
                 if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("type", out var type) ||
                     type.ValueKind != JsonValueKind.String || type.GetString() != "task-tag-shortcuts" ||
                     !body.TryGetProperty("keys", out var keys) || keys.ValueKind != JsonValueKind.Array) return;
@@ -265,6 +281,8 @@ internal sealed class MainForm : Form
     {
         closing = true;
         httpClient.Dispose();
+        foreach (var player in taskSounds.Values) { player.Stop(); player.Dispose(); }
+        taskSounds.Clear();
         StopProcess(boardProcess);
         StopProcess(jiraProcess);
     }

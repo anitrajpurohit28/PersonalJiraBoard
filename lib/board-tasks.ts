@@ -83,9 +83,9 @@ export function taskAgeInDays(task: TaskCreation, now = Date.now()): number | nu
 // return them in any order or replace a temporary key during synchronization.
 // Unfinished children come first. Within each section, a saved drag order
 // takes precedence and newly created children append after existing ones.
-export function orderSubtasks<T extends Pick<Task, "id" | "manualOrder" | "createdAt" | "jiraCreatedAt"> & Partial<Pick<Task, "archived">>>(tasks: T[]): T[] {
+export function orderSubtasks<T extends Pick<Task, "id" | "manualOrder" | "createdAt" | "jiraCreatedAt"> & Partial<Pick<Task, "archived" | "notifyAt" | "notifyFired">>>(tasks: T[]): T[] {
   return [...tasks].sort((a, b) => {
-    return Number(Boolean(a.archived)) - Number(Boolean(b.archived)) || compareManualOrder(a, b) || a.id - b.id;
+    return Number(Boolean(a.archived)) - Number(Boolean(b.archived)) || Number(Boolean(!b.archived && b.notifyAt && b.notifyFired)) - Number(Boolean(!a.archived && a.notifyAt && a.notifyFired)) || compareManualOrder(a, b) || a.id - b.id;
   });
 }
 // Hidden completed children are not included in board bulk actions.
@@ -98,13 +98,16 @@ function compareManualOrder(a: Pick<Task, "manualOrder">, b: Pick<Task, "manualO
   return a.manualOrder - b.manualOrder;
 }
 
-// Priority is strictly High → Medium → Low, then oldest first. Days keeps
+// Fired reminders override every sort. Otherwise Priority is High → Medium → Low. Days keeps
 // overdue tasks and fired reminders first; due dates are local calendar days.
 export function sortTaskGroups(groups: TaskGroup[], sort: string, today = localDay()): TaskGroup[] {
   const needsAttention = (task: Task) => Boolean(!task.archived && task.notifyAt && task.notifyFired) || isTaskOverdue(task, today);
+  const groupHasReminder = (group: TaskGroup) => [group.parent, ...group.children].some(task => task && !task.archived && task.notifyAt && task.notifyFired);
   const groupNeedsAttention = (group: TaskGroup) => Boolean((group.parent && needsAttention(group.parent)) || group.children.some(needsAttention));
   return groups.map((group) => ({ ...group, children: orderSubtasks(group.children) })).sort((a, b) => {
     const left = a.parent || a.matches[0] || a.children[0], right = b.parent || b.matches[0] || b.children[0];
+    const reminderFirst = Number(groupHasReminder(b)) - Number(groupHasReminder(a));
+    if (reminderFirst) return reminderFirst;
     if (sort === "manual") return compareManualOrder(left, right) || right.id - left.id;
     // Use Jira's creation timestamp rather than cache insertion order. Older
     // imported tasks can have newer local IDs; equal or missing times use a stable ID tie-break.

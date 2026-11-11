@@ -19,6 +19,7 @@
 .env*
 .dev.vars*
 /config/credentials.json
+/config/app.json
 /desktop/windows/PersonalTaskBoard.ico
 /desktop/windows/bin/
 /desktop/windows/obj/

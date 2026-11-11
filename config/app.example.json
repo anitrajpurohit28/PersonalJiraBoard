@@ -1,0 +1,4 @@
+{
+  "email": "Your email-id with which you access the Jira board",
+  "jiraUrl": "Your kanban board link; Exmaple: https://<yourUserName>.atlassian.net/jira/software/projects/KAN/boards/2"
+}
