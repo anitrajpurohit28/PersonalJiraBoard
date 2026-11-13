@@ -15,17 +15,50 @@ private struct RuntimeSettings: Decodable {
     let appProtocolVersion: Int
     let helperProtocolVersion: Int
 }
-private let runtimeSettings = try! JSONDecoder().decode(
-    RuntimeSettings.self,
-    from: Data(contentsOf: resourcesDirectory.appendingPathComponent("Runtime.json"))
-)
 private let bundledProjectDirectory = resourcesDirectory.appendingPathComponent("app", isDirectory: true)
 private let nodeExecutable = resourcesDirectory.appendingPathComponent("runtime/node")
-
-// Source and dependencies are immutable inside a signed app. Generated Vite,
-// Wrangler, and database files belong in the user's Application Support folder.
 private let applicationSupportDirectory = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/PersonalJiraBoard", isDirectory: true)
+private let accountURL = applicationSupportDirectory.appendingPathComponent("account.json")
+// Account settings are outside the signed application, so a generic release cannot replace them.
+private func loadRuntimeSettings() -> RuntimeSettings {
+    do {
+        try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
+        let buildURL = bundledProjectDirectory.appendingPathComponent("config/build-info.json")
+        let build = (try? JSONSerialization.jsonObject(with: Data(contentsOf: buildURL))) as? [String: Any]
+        let bundledAccountURL = bundledProjectDirectory.appendingPathComponent("config/app.json")
+        if !FileManager.default.fileExists(atPath: accountURL.path) || build?["development"] as? Bool == true {
+            let bundledData = try Data(contentsOf: bundledAccountURL)
+            let account = (try? JSONSerialization.jsonObject(with: bundledData)) as? [String: String]
+            if account?["email"] != "user@example.com" { try bundledData.write(to: accountURL, options: .atomic) }
+        }
+        if !FileManager.default.fileExists(atPath: accountURL.path) {
+            NSApp.setActivationPolicy(.regular)
+            let alert = NSAlert(); alert.messageText = "Connect your Jira board"
+            alert.informativeText = "Enter your Jira login email and HTTPS board URL. Your API token will be requested in the app."
+            let view = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 85))
+            let email = NSTextField(frame: NSRect(x: 0, y: 48, width: 420, height: 26)); email.placeholderString = "Jira login email"
+            let url = NSTextField(frame: NSRect(x: 0, y: 8, width: 420, height: 26)); url.placeholderString = "https://your-site.atlassian.net/jira/…/boards/2"
+            view.addSubview(email); view.addSubview(url); alert.accessoryView = view
+            alert.addButton(withTitle: "Continue"); alert.addButton(withTitle: "Quit")
+            guard alert.runModal() == .alertFirstButtonReturn else { exit(0) }
+            let data = try JSONSerialization.data(withJSONObject: ["email": email.stringValue, "jiraUrl": url.stringValue])
+            try data.write(to: accountURL, options: .atomic)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: accountURL.path)
+        let process = Process(); let output = Pipe()
+        process.executableURL = nodeExecutable
+        process.arguments = [bundledProjectDirectory.appendingPathComponent("scripts/runtime-info.mjs").path, accountURL.path, resourcesDirectory.appendingPathComponent("Runtime.json").path]
+        process.standardOutput = output
+        try process.run(); let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw NSError(domain: "Jira account", code: 1, userInfo: [NSLocalizedDescriptionKey: "Check your email and Jira URL in \(accountURL.path)"]) }
+        return try JSONDecoder().decode(RuntimeSettings.self, from: data)
+    } catch {
+        let alert = NSAlert(); alert.messageText = "Cannot load Jira settings"; alert.informativeText = error.localizedDescription; alert.runModal(); exit(1)
+    }
+}
+private let runtimeSettings = loadRuntimeSettings()
+
 private let taskDataDirectory = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/PersonalTaskBoard/data", isDirectory: true)
     .appendingPathComponent(runtimeSettings.storageNamespace, isDirectory: true)
@@ -234,6 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.userContentController.add(self, name: "taskTagShortcuts")
         configuration.userContentController.add(self, name: "taskSounds")
+        configuration.userContentController.add(self, name: "taskUpdates")
+        configuration.userContentController.add(self, name: "taskFiles")
         webView = TagShortcutWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -256,6 +291,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         guard message.frameInfo.isMainFrame,
               let origin = message.webView?.url, origin.scheme == "http",
               origin.host == "localhost", origin.port == desktopBoardPort else { return }
+        if message.name == "taskFiles", let body = message.body as? [String: Any] {
+            handleLocalFiles(body); return
+        }
+        if message.name == "taskUpdates", let id = message.body as? String {
+            guard UUID(uuidString: id) != nil, id == id.lowercased() else { return }
+            let directory = applicationSupportDirectory.appendingPathComponent("updates/jobs/\(id)")
+            do {
+                let agent = Process(); agent.executableURL = directory.appendingPathComponent("node")
+                agent.arguments = [directory.appendingPathComponent("update-agent.mjs").path, directory.appendingPathComponent("job.json").path]
+                agent.standardOutput = FileHandle.nullDevice; agent.standardError = FileHandle.nullDevice
+                try agent.run(); NSApp.terminate(nil)
+            } catch {
+                webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('personal-jira-update-error', {detail:'The installer could not start. Try again.'}))", completionHandler: nil)
+            }
+            return
+        }
         if message.name == "taskSounds", let name = message.body as? String, ["complete", "reminder"].contains(name) {
             if taskSounds[name] == nil {
                 taskSounds[name] = NSSound(contentsOf: projectDirectory.appendingPathComponent("public/sounds/\(name).wav"), byReference: false)
@@ -269,6 +320,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.tagShortcutKeys = Set(keys.filter {
             $0.range(of: "^[a-z0-9=-]$", options: .regularExpression) != nil && !reserved.contains($0)
         })
+    }
+
+    private func fileReply(_ id: String, _ values: [String: Any]) {
+        var body = values; body["requestId"] = id
+        guard let data = try? JSONSerialization.data(withJSONObject: body), let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('task-board-files-response',{detail:\(json)}))", completionHandler: nil)
+    }
+    private func localFileURL(_ value: String) -> URL? {
+        guard value.count <= 16000, let url = URL(string: value), url.isFileURL,
+              (url.host == nil || url.host == "" || url.host == "localhost"), url.query == nil, url.fragment == nil,
+              !url.path.contains("\0"), url.path.hasPrefix("/"), !url.path.hasPrefix("//") else { return nil }
+        return url.standardizedFileURL
+    }
+    private func referencePaths(_ urls: [URL]) -> [String] {
+        return urls.compactMap { ($0 as NSURL).filePathURL?.standardizedFileURL }.filter(existingItem).map { url in
+            var directory: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &directory)
+            return URL(fileURLWithPath: url.path, isDirectory: directory.boolValue).absoluteString
+        }
+    }
+    private func existingItem(_ url: URL) -> Bool {
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+    private func handleLocalFiles(_ body: [String: Any]) {
+        guard let id = body["requestId"] as? String, UUID(uuidString: id) != nil, let action = body["action"] as? String else { return }
+        if action == "choose" {
+            let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.treatsFilePackagesAsDirectories = false; panel.allowsMultipleSelection = true
+            panel.prompt = "Link items"; panel.message = "Link files, folders or apps; their contents stay on this computer."
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { return }
+                let files = response == .OK ? self.referencePaths(panel.urls) : []
+                if response == .OK && files.count != panel.urls.count { self.fileReply(id, ["error": "A selected item is no longer available. Please choose it again."]); return }
+                self.fileReply(id, ["files": files])
+            }
+        } else if action == "resolve-drop" {
+            let expected = body["names"] as? [String] ?? []
+            let urls = (NSPasteboard(name: .drag).readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []).filter { $0.isFileURL && existingItem($0) }
+            let normalize: (String) -> String = { $0.precomposedStringWithCanonicalMapping }
+            guard !urls.isEmpty, urls.count <= 100, expected.isEmpty || expected.map(normalize).sorted() == urls.map({ normalize($0.lastPathComponent) }).sorted() else {
+                fileReply(id, ["error": "Drop files or folders from Finder, or use Add files."]); return
+            }
+            fileReply(id, ["files": referencePaths(urls)])
+        } else if action == "status" {
+            let urls = Array((body["urls"] as? [String] ?? []).prefix(100))
+            fileReply(id, ["exists": Dictionary(urls.map { value in (value, localFileURL(value).map(existingItem) ?? false) }, uniquingKeysWith: { a, _ in a })])
+        } else if action == "open", let value = body["url"] as? String {
+            guard let url = localFileURL(value), existingItem(url) else { fileReply(id, ["opened": false]); return }
+            if NSWorkspace.shared.open(url) { fileReply(id, ["opened": true]) }
+            else { fileReply(id, ["error": "No application could open this file."]) }
+        }
     }
 
     private func showStartingPage(message: String = "Starting Personal Jira Board…") {
@@ -401,7 +502,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         // per-user runtime directory on first launch. The database remains in
         // the separate data/ directory and is never replaced during upgrades.
         if projectLooksComplete(at: projectDirectory) {
-            return true
+            do {
+                let account = try Data(contentsOf: accountURL)
+                let target = projectDirectory.appendingPathComponent("config/app.json")
+                if (try? Data(contentsOf: target)) != account {
+                    try account.write(to: target, options: .atomic)
+                }
+                return true
+            } catch { return false }
         }
 
         // Include the process ID so two app copies opened during an upgrade do
@@ -419,6 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 try FileManager.default.removeItem(at: stagingDirectory)
             }
             try FileManager.default.copyItem(at: bundledProjectDirectory, to: stagingDirectory)
+            try Data(contentsOf: accountURL).write(to: stagingDirectory.appendingPathComponent("config/app.json"), options: .atomic)
 
             // Another process may have completed the same installation while
             // this copy was in progress. Prefer its complete result; otherwise
@@ -511,6 +620,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         ].joined(separator: ":")
         environment["PERSONAL_TASK_BOARD_DATA_DIR"] = taskDataDirectory.path
         environment["PORT"] = String(desktopBoardPort)
+        environment["PJB_UPDATE_TARGET"] = Bundle.main.bundleURL.path
+        environment["PJB_NATIVE_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        #if arch(arm64)
+        environment["PJB_UPDATE_PLATFORM"] = "darwin-arm64"
+        #else
+        environment["PJB_UPDATE_PLATFORM"] = "darwin-x64"
+        #endif
         environment["WRANGLER_WRITE_LOGS"] = "false"
         environment["WRANGLER_LOG_PATH"] = runtimeStateDirectory
             .appendingPathComponent("wrangler.log").path

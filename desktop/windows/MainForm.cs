@@ -27,6 +27,7 @@ internal sealed class MainForm : Form
     private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
     private readonly HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(2) };
     private readonly string projectDirectory;
+    private static readonly string nodeExecutable = File.Exists(Path.Combine(AppContext.BaseDirectory, "runtime", "node.exe")) ? Path.Combine(AppContext.BaseDirectory, "runtime", "node.exe") : "node.exe";
     private readonly string logFile;
     private readonly object logLock = new();
     private Process? boardProcess;
@@ -164,6 +165,24 @@ internal sealed class MainForm : Form
             {
                 using var message = JsonDocument.Parse(eventArgs.WebMessageAsJson);
                 var body = message.RootElement;
+                if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("type", out var filesType) && filesType.ValueKind == JsonValueKind.String && filesType.GetString() == "task-files")
+                {
+                    HandleLocalFiles(body, eventArgs.AdditionalObjects); return;
+                }
+                if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("type", out var updateType) && updateType.ValueKind == JsonValueKind.String && updateType.GetString() == "app-update-install")
+                {
+                    if (!body.TryGetProperty("jobId", out var jobId) || jobId.ValueKind != JsonValueKind.String || !Guid.TryParseExact(jobId.GetString(), "D", out var id)) return;
+                    var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PersonalJiraBoard", "updates", "jobs", id.ToString());
+                    try {
+                        var start = new ProcessStartInfo(Path.Combine(directory, "node.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory };
+                        start.ArgumentList.Add(Path.Combine(directory, "update-agent.mjs")); start.ArgumentList.Add(Path.Combine(directory, "job.json"));
+                        Process.Start(start); Close();
+                    } catch (Exception error) {
+                        WriteLog($"[windows] Installer could not start: {error.Message}");
+                        _ = webView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new CustomEvent('personal-jira-update-error', {detail:'The installer could not start. Try again.'}))");
+                    }
+                    return;
+                }
                 if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("type", out var soundType) &&
                     soundType.ValueKind == JsonValueKind.String && soundType.GetString() == "task-sound")
                 {
@@ -219,6 +238,54 @@ internal sealed class MainForm : Form
         };
     }
 
+    private void FileReply(string id, object reply)
+    {
+        var values = JsonSerializer.SerializeToElement(reply).EnumerateObject().ToDictionary(property => property.Name, property => (object)property.Value);
+        values["requestId"] = id;
+        _ = webView.CoreWebView2.ExecuteScriptAsync($"window.dispatchEvent(new CustomEvent('task-board-files-response',{{detail:{JsonSerializer.Serialize(values)}}}))");
+    }
+    private static string? LocalFilePath(string value)
+    {
+        if (value.Length > 16000 || !Uri.TryCreate(value, UriKind.Absolute, out var uri) || !uri.IsFile || uri.IsUnc || !string.IsNullOrEmpty(uri.Host) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)) return null;
+        var file = uri.LocalPath;
+        if (file.Length < 3 || !char.IsAsciiLetter(file[0]) || file[1] != ':' || (file[2] != '\\' && file[2] != '/') || file.IndexOf(':', 2) >= 0 || file.Any(char.IsControl)) return null;
+        return Path.GetFullPath(file);
+    }
+    private static bool ExistingItem(string? value) => File.Exists(value) || Directory.Exists(value);
+    private static string ReferenceUrl(string file) => new Uri(Directory.Exists(file) && !Path.EndsInDirectorySeparator(file) ? file + Path.DirectorySeparatorChar : file).AbsoluteUri;
+    private void HandleLocalFiles(JsonElement body, IReadOnlyList<object> additionalObjects)
+    {
+        if (!body.TryGetProperty("requestId", out var request) || request.ValueKind != JsonValueKind.String || !Guid.TryParse(request.GetString(), out _) || !body.TryGetProperty("action", out var action) || action.ValueKind != JsonValueKind.String) return;
+        var id = request.GetString()!;
+        try {
+            if (action.GetString() == "choose") {
+                BeginInvoke((MethodInvoker)(() => {
+                    var menu = new ContextMenuStrip();
+                    menu.Items.Add("Files…", null, (_, _) => {
+                        using var dialog = new OpenFileDialog { Multiselect = true, CheckFileExists = true, Title = "Link files" };
+                        FileReply(id, new { files = dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileNames.Select(ReferenceUrl).ToArray() : Array.Empty<string>() });
+                    });
+                    menu.Items.Add("Folder…", null, (_, _) => {
+                        using var dialog = new FolderBrowserDialog { Description = "Link folders", UseDescriptionForTitle = true };
+                        FileReply(id, new { files = dialog.ShowDialog(this) == DialogResult.OK ? new[] { ReferenceUrl(dialog.SelectedPath) } : Array.Empty<string>() });
+                    });
+                    menu.Closed += (_, args) => { if (args.CloseReason != ToolStripDropDownCloseReason.ItemClicked) FileReply(id, new { files = Array.Empty<string>() }); };
+                    menu.Show(Cursor.Position);
+                }));
+            } else if (action.GetString() == "resolve-drop") {
+                var files = additionalObjects.OfType<CoreWebView2File>().Select(file => file.Path).Where(ExistingItem).Take(100).Select(ReferenceUrl).ToArray();
+                FileReply(id, new { files });
+            } else if (action.GetString() == "status" && body.TryGetProperty("urls", out var urls) && urls.ValueKind == JsonValueKind.Array) {
+                var exists = urls.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String).Take(100).Select(value => value.GetString()!).Distinct().ToDictionary(value => value, value => ExistingItem(LocalFilePath(value)));
+                FileReply(id, new { exists });
+            } else if (action.GetString() == "open" && body.TryGetProperty("url", out var value) && value.ValueKind == JsonValueKind.String) {
+                var file = LocalFilePath(value.GetString()!);
+                if (file is null || !ExistingItem(file)) { FileReply(id, new { opened = false }); return; }
+                Process.Start(new ProcessStartInfo(file) { UseShellExecute = true }); FileReply(id, new { opened = true });
+            }
+        } catch (Exception error) { WriteLog($"[windows] Local file request failed: {error.Message}"); FileReply(id, new { error = "The file could not be opened on this device." }); }
+    }
+
     private static bool IsTagShortcut(string key) => key.Length == 1 &&
         "abcdefghijklmnopqrstuvwxyz0123456789-=".Contains(key, StringComparison.Ordinal) &&
         !"acqvxz".Contains(key, StringComparison.Ordinal);
@@ -254,7 +321,7 @@ internal sealed class MainForm : Form
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "node.exe",
+                FileName = nodeExecutable,
                 WorkingDirectory = projectDirectory,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -267,6 +334,9 @@ internal sealed class MainForm : Form
         process.OutputDataReceived += (_, eventArgs) => WriteLog(eventArgs.Data);
         process.ErrorDataReceived += (_, eventArgs) => WriteLog(eventArgs.Data);
         process.Exited += (_, _) => WriteLog("[windows] A local service exited.");
+        process.StartInfo.Environment["PJB_UPDATE_TARGET"] = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+        process.StartInfo.Environment["PJB_NATIVE_PID"] = Environment.ProcessId.ToString();
+        process.StartInfo.Environment["PJB_UPDATE_PLATFORM"] = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "win32-arm64" : "win32-x64";
         process.StartInfo.Environment["PORT"] = DesktopBoardPort.ToString();
         process.StartInfo.Environment["WRANGLER_WRITE_LOGS"] = "false";
         process.StartInfo.Environment["WRANGLER_LOG_PATH"] = Path.Combine(Path.GetDirectoryName(logFile)!, "wrangler.log");
@@ -350,8 +420,53 @@ internal sealed class MainForm : Form
         return Path.Combine(directory, "app.log");
     }
 
+    private static string PreparePortableProject(string bundled)
+    {
+        var support = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PersonalJiraBoard");
+        Directory.CreateDirectory(support);
+        var account = Path.Combine(support, "account.json");
+        using var build = JsonDocument.Parse(File.ReadAllText(Path.Combine(bundled, "config", "build-info.json")));
+        var bundledAccount = Path.Combine(bundled, "config", "app.json");
+        using var settings = JsonDocument.Parse(File.ReadAllText(bundledAccount));
+        if ((!File.Exists(account) || build.RootElement.GetProperty("development").GetBoolean()) && settings.RootElement.GetProperty("email").GetString() != "user@example.com") File.Copy(bundledAccount, account, true);
+        if (!File.Exists(account))
+        {
+            using var form = new Form { Text = "Connect your Jira board", Width = 510, Height = 240, StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
+            var email = new TextBox { Left = 20, Top = 40, Width = 450, PlaceholderText = "Jira login email" };
+            var url = new TextBox { Left = 20, Top = 95, Width = 450, PlaceholderText = "https://your-site.atlassian.net/jira/…/boards/2" };
+            var button = new Button { Text = "Continue", Left = 360, Top = 145, Width = 110, DialogResult = DialogResult.OK };
+            form.Controls.AddRange(new Control[] { new Label { Text = "Jira login email", Left = 20, Top = 15, Width = 450 }, email, new Label { Text = "Jira board URL", Left = 20, Top = 70, Width = 450 }, url, button }); form.AcceptButton = button;
+            if (form.ShowDialog() != DialogResult.OK) throw new OperationCanceledException("Jira setup was cancelled.");
+            File.WriteAllText(account, JsonSerializer.Serialize(new { email = email.Text, jiraUrl = url.Text }));
+        }
+        var buildId = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "BuildID.txt")).Trim();
+        if (buildId.Length == 0 || buildId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-' && c != '.' && c != '_')) throw new InvalidOperationException("Invalid application build identifier.");
+        var destination = Path.Combine(support, "runtime", "apps", buildId);
+        if (!File.Exists(Path.Combine(destination, ".complete")))
+        {
+            var staging = destination + ".installing-" + Environment.ProcessId;
+            if (Directory.Exists(staging)) Directory.Delete(staging, true);
+            CopyDirectory(bundled, staging);
+            File.WriteAllText(Path.Combine(staging, ".complete"), buildId);
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            if (Directory.Exists(destination)) Directory.Delete(destination, true);
+            Directory.Move(staging, destination);
+        }
+        var target = Path.Combine(destination, "config", "app.json");
+        if (!File.Exists(target) || !File.ReadAllBytes(account).SequenceEqual(File.ReadAllBytes(target))) File.Copy(account, target, true);
+        return destination;
+    }
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+        foreach (var directory in Directory.GetDirectories(source)) CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+    }
+
     private static string FindProjectDirectory()
     {
+        var bundled = Path.Combine(AppContext.BaseDirectory, "app");
+        if (IsProjectDirectory(bundled) && File.Exists(Path.Combine(AppContext.BaseDirectory, "BuildID.txt"))) return PreparePortableProject(bundled);
         var configured = Environment.GetEnvironmentVariable(
             "PERSONAL_TASK_BOARD_PROJECT_DIR");
         if (IsProjectDirectory(configured)) return Path.GetFullPath(configured!);
@@ -383,7 +498,7 @@ internal sealed class MainForm : Form
 
     private static JsonDocument ReadRuntimeSettings(string directory)
     {
-        var start = new ProcessStartInfo("node.exe")
+        var start = new ProcessStartInfo(nodeExecutable)
         {
             WorkingDirectory = directory, UseShellExecute = false,
             CreateNoWindow = true, RedirectStandardOutput = true,

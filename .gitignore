@@ -24,3 +24,5 @@
 /desktop/windows/bin/
 /desktop/windows/obj/
 npm-debug.log*
+
+/config/build-info.json

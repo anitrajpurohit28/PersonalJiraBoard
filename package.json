@@ -17,7 +17,13 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "windows:start": "node desktop/windows/run-windows.mjs"
+    "windows:start": "node desktop/windows/run-windows.mjs",
+    "postinstall": "node scripts/stamp-version.mjs",
+    "predev": "node scripts/stamp-version.mjs",
+    "prebuild": "node scripts/stamp-version.mjs",
+    "release:package": "node scripts/package-release.mjs",
+    "release:manifest": "node scripts/release-manifest.mjs",
+    "prestart": "node scripts/stamp-version.mjs"
   },
   "dependencies": {
     "@cloudflare/vite-plugin": "1.37.1",

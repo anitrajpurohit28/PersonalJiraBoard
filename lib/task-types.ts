@@ -16,6 +16,7 @@ export type Task = {
   jiraAssignee: string | null;
   jiraStatusId: string | null;
   description: string;
+  descriptionFormat?: "todo" | "text" | null;
   jiraPriorityId: string | null;
   jiraAssigneeId: string | null;
   projectId: string | null;

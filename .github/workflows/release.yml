@@ -1,0 +1,97 @@
+name: Desktop release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin-arm64
+          - os: macos-15-intel
+            platform: darwin-x64
+          - os: windows-2025
+            platform: win32-x64
+            runtime: win-x64
+          - os: windows-2025
+            platform: win32-arm64
+            runtime: win-arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      PJB_RELEASE_BUILD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          architecture: ${{ startsWith(matrix.platform, 'win32-') && 'x64' || (matrix.platform == 'darwin-arm64' && 'arm64' || 'x64') }}
+      - name: Use an account-neutral release configuration
+        shell: bash
+        run: node -e "require('fs').writeFileSync('config/app.json', JSON.stringify({ email:'user@example.com', jiraUrl:'https://example.atlassian.net/jira/software/projects/KAN/boards/2' }))"
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run typecheck
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build macOS application
+        if: runner.os == 'macOS'
+        run: npm run desktop:build
+      - name: Build Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/windows/build-windows.ps1 -Runtime ${{ matrix.runtime }}
+      - name: Package and verify release
+        run: node scripts/package-release.mjs ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.platform }}
+          path: outputs/releases/*
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: outputs/releases
+      - run: node scripts/release-manifest.mjs
+      - name: Publish a complete release atomically
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$(node -p "require('./outputs/releases/update-manifest.json').version")"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; versioned releases are never overwritten."
+            exit 1
+          fi
+          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "Personal Jira Board $tag" --generate-notes outputs/releases/*.zip outputs/releases/update-manifest.json
+          gh release edit "$tag" --draft=false --latest

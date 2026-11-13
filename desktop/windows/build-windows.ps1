@@ -59,10 +59,14 @@ finally {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+Push-Location $ProjectDirectory
+try { $AppVersion = & node scripts/stamp-version.mjs; if ($LASTEXITCODE -ne 0) { throw "Version stamping failed." } }
+finally { Pop-Location }
 & dotnet publish $WindowsProject `
     --configuration Release `
     --runtime $Runtime `
     --self-contained true `
+    -p:Version=$AppVersion `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:PublishTrimmed=false `
@@ -70,21 +74,7 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Windows compilation failed. See the dotnet error above." }
 if (-not (Test-Path (Join-Path $OutputDirectory "PersonalTaskBoard.exe"))) { throw "The Windows executable was not created." }
 
-$Instructions = @"
-Personal Jira Board for Windows
-
-1. Keep this output folder inside the repository (or set PERSONAL_TASK_BOARD_PROJECT_DIR).
-2. Configure your email and Jira board URL in config/app.json.
-3. Put your Jira API token in config/credentials.json; it is never included in the executable.
-4. Double-click PersonalTaskBoard.exe, or run npm.cmd run windows:start from the repository.
-
-Runtime requirements: Node.js 22.13+ and Microsoft Edge WebView2 Runtime.
-The .NET runtime is included in this executable.
-Data and offline queue: %LOCALAPPDATA%\PersonalTaskBoard
-Display preferences:   %LOCALAPPDATA%\PersonalJiraBoard\WebView2
-Diagnostics:           %LOCALAPPDATA%\PersonalTaskBoard\Logs\app.log
-
-See desktop/windows/README.md for setup, browser mode, upgrades, and ARM64 builds.
-"@
-Set-Content -Path (Join-Path $OutputDirectory "README-Windows.txt") -Value $Instructions
-Write-Host "Windows app created at: $OutputDirectory\PersonalTaskBoard.exe"
+Push-Location $ProjectDirectory
+try { & node scripts/package-windows-runtime.mjs $OutputDirectory; if ($LASTEXITCODE -ne 0) { throw "Runtime packaging failed." } }
+finally { Pop-Location }
+Write-Host "Portable Windows app created at: $OutputDirectory\PersonalTaskBoard.exe"

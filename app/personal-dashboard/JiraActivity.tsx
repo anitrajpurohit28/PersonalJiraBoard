@@ -1,18 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { adfText, MAX_ATTACHMENT_BYTES } from "../../lib/jira-fields.mjs";
+import { adfText } from "../../lib/jira-fields.mjs";
 import type { Task } from "../../lib/task-types";
 import { LinkedText, DraftLinks } from "./LinkedText";
 import { requestJson } from "./api";
 import { JiraTaskLink, WebJiraLink } from "./JiraTaskLink";
 
 type Comment = { id: string; body: unknown; author?: { accountId?: string; displayName?: string }; created?: string; pending?: boolean };
-type Attachment = { id: string; filename: string; size: number; availableOffline?: boolean; pending?: boolean };
 type Link = { id: string; type?: { id: string; inward: string; outward: string }; inwardIssue?: { key: string; fields?: { summary?: string } }; outwardIssue?: { key: string; fields?: { summary?: string } }; pending?: boolean };
-type Activity = { comments: Comment[]; attachments: Attachment[]; links: Link[]; linkTypes: Array<{ id: string; inward: string; outward: string }>; accountId: string; offline?: boolean; cached?: boolean; attachmentSettings?: { enabled?: boolean } };
+type Activity = { comments: Comment[]; links: Link[]; linkTypes: Array<{ id: string; inward: string; outward: string }>; accountId: string; offline?: boolean; cached?: boolean; attachmentSettings?: { enabled?: boolean } };
 
-export function JiraActivity({ task, tasks, onChanged, onOpenTask, afterComments, beforeAttachments }: { task: Task; tasks: Task[]; onChanged: () => Promise<void>; onOpenTask: (id: number) => void; afterComments: ReactNode; beforeAttachments: ReactNode }) {
+export function JiraActivity({ task, tasks, onChanged, onOpenTask, afterComments, footer }: { task: Task; tasks: Task[]; onChanged: () => Promise<void>; onOpenTask: (id: number) => void; afterComments: ReactNode; footer: ReactNode }) {
   const [data, setData] = useState<Activity | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -52,21 +51,7 @@ export function JiraActivity({ task, tasks, onChanged, onOpenTask, afterComments
       setComment(""); setEditing(null); operationId.current = crypto.randomUUID();
     }
   }
-  async function upload(files: File[]) {
-    if (!files.length || saving.current) return;
-    saving.current = true;
-    setBusy(true); setError("");
-    try {
-      for (const file of files) {
-        if (!file.size || file.size > MAX_ATTACHMENT_BYTES) throw new Error("Each attachment must be between 1 byte and 25 MB.");
-        const form = new FormData(); form.set("file", file); form.set("operationId", crypto.randomUUID());
-        await requestJson(`/api/tasks/${task.id}/attachments`, { method: "POST", body: form });
-      }
-      await load(); await onChanged();
-    } catch (error) { setError(error instanceof Error ? error.message : "Unable to save the attachment."); }
-    finally { saving.current = false; setBusy(false); }
-  }
-  if (!data) return <><section className="activity-section" aria-label="Comments"><h3>Comments</h3><p role={error ? "alert" : "status"}>{error || "Loading cached activity…"}</p></section>{afterComments}{beforeAttachments}</>;
+  if (!data) return <><section className="activity-section" aria-label="Comments"><h3>Comments</h3><p role={error ? "alert" : "status"}>{error || "Loading cached activity…"}</p></section>{afterComments}{footer}</>;
   return <><section className="activity-section" aria-label="Comments">
     {error ? <p className="notice error" role="alert">{error}</p> : null}
     {data.offline ? <p className="offline-note">Offline. Changes are saved on this device until Jira is available.</p> : null}
@@ -95,10 +80,6 @@ export function JiraActivity({ task, tasks, onChanged, onOpenTask, afterComments
     })}
     {data.linkTypes.length ? <form onSubmit={(event) => { event.preventDefault(); const [typeId, direction] = relationship.split(":"); void mutate("link-add", { targetKey: cachedTarget || target.trim().toUpperCase(), typeId, direction }).then((saved) => { if (saved) { setTarget(""); setCachedTarget(""); } }); }}><div className="form-grid"><label>Relationship<select value={relationship} required disabled={busy} onChange={(event) => setRelationship(event.target.value)}><option value="">Choose…</option>{data.linkTypes.flatMap((type) => [<option key={`${type.id}:outward`} value={`${type.id}:outward`}>{type.outward}</option>, <option key={`${type.id}:inward`} value={`${type.id}:inward`}>{type.inward}</option>])}</select></label><label>Task to link<select value={cachedTarget} disabled={busy} onChange={(event) => setCachedTarget(event.target.value)}><option value="">Enter a Jira key…</option>{tasks.filter((row) => row.id !== task.id).map((row) => <option key={row.id} value={row.jiraKey}>{row.title}{row.jiraUrl ? ` (${row.jiraKey})` : " (pending sync)"}</option>)}</select></label></div>{!cachedTarget ? <label>Jira task key<input value={target} required disabled={busy} placeholder="e.g. KAN-2" onChange={(event) => setTarget(event.target.value)} /></label> : null}<button disabled={busy || (!cachedTarget && !target.trim()) || !relationship}>Link task</button></form> : <p className="muted">Link types have not been cached, or issue linking is unavailable in Jira.</p>}
   </section>
-  {beforeAttachments}
-  <section className="activity-section" aria-label="Attachments">
-    <h3>Attachments</h3>
-    {data.attachments.map((file) => <div className="attachment-entry" key={file.id}><div><a href={`/api/tasks/${task.id}/attachments/${encodeURIComponent(file.id)}`} target="_blank" rel="noreferrer">{file.filename}</a><small>{Math.max(1, Math.round(file.size / 1024))} KB · {file.pending ? "Pending upload" : file.availableOffline ? "Available offline" : "Download once to keep offline"}</small></div><button type="button" className="danger" disabled={busy} onClick={() => { if (window.confirm(`Delete the attachment “${file.filename}” from Jira?`)) void mutate("attachment-delete", { attachmentId: String(file.id), confirmDelete: true }); }}>Remove attachment</button></div>)}
-    {data.attachmentSettings?.enabled !== false ? <label>Add attachments<input type="file" multiple disabled={busy} onChange={(event) => { const files = Array.from(event.currentTarget.files || []); event.currentTarget.value = ""; void upload(files); }} /><small>Up to 25 MB per file. Added files are kept for offline use.</small></label> : <p className="muted">Attachments are unavailable for this Jira connection.</p>}
-  </section></>;
+  {footer}
+  </>;
 }

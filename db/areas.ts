@@ -8,7 +8,7 @@ import { areaCreationStatement, areaMoveStatements, parseArea, parseAreaId, type
 type DB = Awaited<ReturnType<typeof ensureTaskSchema>>;
 export async function listAreas(db?: DB) {
   const d1 = db || await ensureTaskSchema();
-  return (await d1.prepare("SELECT id, name, disabled FROM personal_areas ORDER BY sort_order, name_key, id").all<TaskArea>()).results;
+  return (await d1.prepare("SELECT id, name, disabled, sort_order AS sortOrder FROM personal_areas ORDER BY sort_order, name_key, id").all<TaskArea>()).results;
 }
 export async function areaTaskRows(d1: DB): Promise<AreaTask[]> {
   const result = await d1.prepare(`SELECT tasks.id, tasks.jira_key, tasks.jira_parent_key, assigned.area_id

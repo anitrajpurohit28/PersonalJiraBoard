@@ -34,8 +34,8 @@ test("priority buttons offer only High, Medium and Low using the site's Jira IDs
 test("main configuration still contains only email and the board URL; credentials stay separate", async () => {
   const config = JSON.parse(await readFile(new URL("../config/app.json", import.meta.url), "utf8"));
   assert.deepEqual(Object.keys(config).sort(), ["email", "jiraUrl"]);
-  assert.equal(settings.email, "anitrajpurohit28@gmail.com");
-  assert.equal(configuredSite, "https://anitrajpurohit28.atlassian.net");
+  assert.equal(settings.email, config.email.trim().toLowerCase());
+  assert.equal(configuredSite, new URL(config.jiraUrl).origin);
   assert.equal(configuredBoardId, "2");
   assert.match(await readFile(new URL("../.gitignore", import.meta.url), "utf8"), /\/config\/credentials\.json/);
   for (const config of [{}, { email: "bad", jiraUrl: settings.jiraUrl }, { ...settings, jiraUrl: "http://insecure.example" }, { ...settings, apiToken: "must-be-private" }]) assert.throws(() => validateSettings(config));

@@ -1,5 +1,5 @@
 import { initialTaskStatus, issuePriority } from "./jira-personal.mjs";
-import { adfText, normalizedDate, validLocalKey, validTaskKey } from "./jira-fields.mjs";
+import { descriptionText, normalizedDate, validLocalKey, validTaskKey } from "./jira-fields.mjs";
 
 export type JiraIssue = {
   id: string; key: string;
@@ -41,7 +41,7 @@ export function planPersonalJiraSync(issues: JiraIssue[], existingRows: Existing
       jira_assignee: fields.assignee?.displayName || "", jira_assignee_id: fields.assignee?.accountId || null,
       jira_reporter: fields.reporter?.displayName || "", jira_created_at: normalizedDate(fields.created),
       jira_updated_at: normalizedDate(fields.updated), jira_synced_at: syncedAt,
-      jira_description: adfText(fields.description).trimEnd(), jira_project_id: fields.project?.id || null,
+      jira_description: descriptionText(fields.description), jira_project_id: fields.project?.id || null,
       jira_project_key: fields.project?.key || null, jira_issue_type_id: fields.issuetype?.id || null,
       jira_issue_type: fields.issuetype?.name || null, jira_parent_key: fields.parent?.key || null,
       jira_is_subtask: fields.issuetype?.subtask ? 1 : 0,

@@ -1,4 +1,4 @@
-export type TaskArea = { id: string; name: string; disabled?: boolean };
+export type TaskArea = { id: string; name: string; disabled?: boolean; sortOrder?: number };
 export type AreaSyncInfo = { managed: boolean; ready: boolean; message: string };
 export type AreaTask = { id: number; jiraKey: string; parentKey: string | null; areaId: string | null };
 export const personalAreaSchema = [
@@ -29,6 +29,28 @@ export function parseAreaId(value: unknown): string | null {
 export function areaCreationStatement(id: string, area: ReturnType<typeof parseArea>) {
   return { sql: `INSERT INTO personal_areas (id, name, name_key, sort_order)
     VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM personal_areas))`, params: [id, area.name, area.nameKey] };
+}
+// Unassigned is virtual at rank zero; signed ranks let it move with the other tabs.
+export function areaChoices(areas: TaskArea[]) {
+  const index=areas.findIndex(area=>(area.sortOrder??0)>=0),choices=[...areas];
+  choices.splice(index<0?choices.length:index,0,{id:"",name:"Unassigned"});
+  return choices;
+}
+export function parseAreaOrder(value: unknown, currentIds: string[]) {
+  const ids=(value as {ids?:unknown}|null)?.ids;
+  if(!Array.isArray(ids)||ids.some(id=>typeof id!=="string"||(id!==""&&!/^[a-zA-Z0-9-]{1,80}$/.test(id)))||new Set(ids).size!==ids.length)throw invalid("Invalid area order.");
+  const known=new Set(["",...currentIds]);
+  if(ids.length!==known.size||ids.some(id=>!known.has(id)))throw invalid("The area list changed. Try moving the area again.",409);
+  return ids as string[];
+}
+export function areaOrderStatements(ids: string[]) {
+  const unassigned=ids.indexOf("");
+  return ids.flatMap((id,index)=>id?[{sql:"UPDATE personal_areas SET sort_order = ? WHERE id = ?",params:[index-unassigned,id]}]:[]);
+}
+export function moveAreaChoice(ids: string[], source: string, target: string, after: boolean) {
+  if(source===target||!ids.includes(source)||!ids.includes(target))return ids;
+  const next=ids.filter(id=>id!==source),index=next.indexOf(target);
+  next.splice(index+(after?1:0),0,source);return next;
 }
 // Area ownership follows the root task, including completed or currently hidden parents.
 // Orphaned siblings stay together; a cycle uses one stable representative.

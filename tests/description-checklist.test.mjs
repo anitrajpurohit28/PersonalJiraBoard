@@ -4,14 +4,16 @@ import { parseDescriptionChecklist, descriptionChecklistRows, orderChecklist, wr
 import { toAdf, adfText, personalFields, comparableField } from '../lib/jira-fields.mjs';
 import { jiraFixture } from './jira-fixture.mjs';
 
-test('description modes preserve text and recognize saved, empty and duplicate checklist items', () => {
+test('description modes ignore blank lines and empty checkbox markers while preserving duplicate nonempty items', () => {
   const text='First line\n\nhttps://example.com\nLast line';
   assert.equal(parseDescriptionChecklist(text),null);
   const list=writeDescriptionChecklist(descriptionChecklistRows(text));
-  assert.equal(checklistPlainText(list),text);
-  assert.deepEqual(parseDescriptionChecklist('- [ ] Same\n- [X] Same\n- [ ]'),[{text:'Same',done:false},{text:'Same',done:true},{text:'',done:false}]);
+  assert.equal(checklistPlainText(list),text.replace(/\n\n/g,'\n'));
+  assert.deepEqual(parseDescriptionChecklist('- [ ] Same\n- [X] Same\n- [ ]'),[{text:'Same',done:false},{text:'Same',done:true}]);
   assert.equal(parseDescriptionChecklist('Heading\n- [ ] Item'),null);
-  assert.equal(writeDescriptionChecklist(descriptionChecklistRows('')),'- [ ]');
+  assert.equal(writeDescriptionChecklist(descriptionChecklistRows('')),'');
+  assert.deepEqual(descriptionChecklistRows('  \n[ ] First\n\n- [x] Done\n- [ ]\n  '),[{text:'First',done:false},{text:'Done',done:true}]);
+  assert.deepEqual(parseDescriptionChecklist('- [ ] First\n\n- [x] Done\n'),[{text:'First',done:false},{text:'Done',done:true}]);
 });
 test('completed checklist items sink stably and reopening them restores them to unfinished work',()=>{
  const rows=[{id:'a',text:'First',done:false},{id:'b',text:'Second',done:false},{id:'c',text:'Third',done:true}];

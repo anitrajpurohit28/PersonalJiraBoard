@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localSettings } from "../config/settings.mjs";
 import { JiraConnection } from "./jira-connection.mjs";
+import { AppUpdater } from "./app-updates.mjs";
 import { MAX_ATTACHMENT_BYTES } from "../lib/jira-fields.mjs";
 
 async function readJson(request) {
@@ -21,7 +22,7 @@ async function readJson(request) {
   return value;
 }
 
-export function createJiraHelperServer(broker = new JiraConnection()) {
+export function createJiraHelperServer(broker = new JiraConnection(), updater = new AppUpdater()) {
   return createServer(async (request, response) => {
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Cache-Control", "no-store");
@@ -33,7 +34,13 @@ export function createJiraHelperServer(broker = new JiraConnection()) {
     try {
       const pathname = new URL(request.url, "http://localhost").pathname;
       let result;
-      if (request.method === "GET" && pathname === "/api/jira/status") result = await broker.status();
+      if (request.method === "GET" && pathname === "/api/jira/app-update-status") result = { ...broker.publicStatus(), ...updater.status() };
+      else if (request.method === "POST" && ["/api/jira/app-update-check", "/api/jira/app-update-prepare"].includes(pathname)) {
+        if (origin && ![localSettings.desktopPort, localSettings.browserPort].includes(Number(new URL(origin).port))) throw Object.assign(new Error("Updates must come from this board."), { status: 403 });
+        const payload = await readJson(request);
+        result = { ...broker.publicStatus(), ...(pathname.endsWith("check") ? await updater.check() : await updater.prepare(payload.version)) };
+      }
+      else if (request.method === "GET" && pathname === "/api/jira/status") result = await broker.status();
       else if (request.method === "POST" && pathname === "/api/jira/disconnect") result = broker.disconnect();
       else if (request.method === "POST" && pathname.startsWith("/api/jira/")) {
         const action = pathname.slice("/api/jira/".length);

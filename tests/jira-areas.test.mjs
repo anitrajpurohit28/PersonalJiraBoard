@@ -250,3 +250,14 @@ test("an old offline cache waits for current Jira Area values before migrating l
   await workspace.synchronize(client); await workspace.initializeAreas(seed()); await drain(workspace, client);
   assert.equal(remote(fixture, "KAN-1"), "202"); assert.equal(selected(workspace, "KAN-1"), "202");
 });
+
+test('Jira refresh preserves manual Area ranks while new choices append after Unassigned',()=>{
+ const db=database();try{
+  cache(db,catalog(),[],1);
+  db.prepare('UPDATE personal_areas SET sort_order=-2 WHERE name=?').run('Learn');
+  db.prepare('UPDATE personal_areas SET sort_order=-1 WHERE name=?').run('Work');
+  cache(db,catalog([{id:'201',name:'Work projects'},{id:'203',name:'Learn'},{id:'205',name:'Personal'}]),[],2);
+  assert.deepEqual(rows(db).map(area=>[area.name,area.sort_order]),[['Learn',-2],['Work projects',-1],['Personal',0]]);
+  cache(db,catalog(),[],1);assert.deepEqual(rows(db).map(area=>[area.name,area.sort_order]),[['Learn',-2],['Work projects',-1],['Personal',0]]);
+ }finally{db.close();}
+});

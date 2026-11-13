@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { personalAreaSchema, parseArea, parseAreaId, areaCreationStatement, areaMoveStatements, resolvedTaskAreas, taskAreaAliasStatements, initialTaskAreaStatement } from "../lib/task-areas.ts";
+import { personalAreaSchema, parseArea, parseAreaId, areaCreationStatement, areaMoveStatements, resolvedTaskAreas, taskAreaAliasStatements, initialTaskAreaStatement, areaChoices, parseAreaOrder, areaOrderStatements, moveAreaChoice } from "../lib/task-areas.ts";
 import { jiraCacheChanges } from "../lib/jira-cache-changes.mjs";
 
 function database(file = ":memory:") {
@@ -146,4 +146,33 @@ test("creation retries do not overwrite a later area move, including Unassigned"
       assert.deepEqual(areaIds(db), [[1, destination]]);
     }
   } finally { db.close(); }
+});
+
+function orderedChoices(db){return areaChoices(db.prepare('SELECT id,name,sort_order AS sortOrder FROM personal_areas ORDER BY sort_order,name_key,id').all()).map(area=>area.id);}
+function reorder(db,ids){const current=db.prepare('SELECT id FROM personal_areas').all().map(area=>area.id);const valid=parseAreaOrder({ids},current);db.exec('BEGIN');try{for(const change of areaOrderStatements(valid))db.prepare(change.sql).run(...change.params);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}}
+test('Area drag order, including Unassigned, survives reopening without changing task ownership',()=>{
+ const directory=mkdtempSync(path.join(tmpdir(),'area-order-')),file=path.join(directory,'tasks.sqlite');let db=database(file);
+ try{
+  add(db,'work','Work');add(db,'personal','Personal');add(db,'learn','Learn');db.exec("INSERT INTO tasks(id,jira_key,notes) VALUES(1,'KAN-1','Keep me')");move(db,[1],'work');
+  const tasks=db.prepare('SELECT * FROM tasks').all(),assigned=areaIds(db);
+  assert.deepEqual(orderedChoices(db),['','work','personal','learn']);
+  reorder(db,['learn','','personal','work']);assert.deepEqual(orderedChoices(db),['learn','','personal','work']);
+  db.close();db=database(file);assert.deepEqual(orderedChoices(db),['learn','','personal','work']);
+  assert.deepEqual(db.prepare('SELECT * FROM tasks').all(),tasks);assert.deepEqual(areaIds(db),assigned);
+  reorder(db,['work','learn','personal','']);add(db,'finance','Finance');assert.deepEqual(orderedChoices(db),['work','learn','personal','','finance']);
+  db.exec("UPDATE personal_areas SET name='Learning',name_key='learning' WHERE id='learn'");assert.deepEqual(orderedChoices(db),['work','learn','personal','','finance']);
+  db.exec("DELETE FROM personal_areas WHERE id='personal'");assert.deepEqual(orderedChoices(db),['work','learn','','finance']);
+ }finally{db.close();rmSync(directory,{recursive:true,force:true});}
+});
+test('Area reordering rejects malformed/stale lists without losing areas or their existing order',()=>{
+ const db=database();try{add(db,'work','Work');add(db,'learn','Learn');
+ for(const ids of [null,[],['work','learn'],['','work'],['','work','learn','new'],['','work','work'],['',null,'learn'],['','../work','learn']]){assert.throws(()=>reorder(db,ids));assert.deepEqual(orderedChoices(db),['','work','learn']);}
+ assert.deepEqual(parseAreaOrder({ids:['']},[]),['']);assert.deepEqual(areaOrderStatements(['']),[]);
+ }finally{db.close();}
+});
+test('Area drag placement works on either side and keeps invalid/self drops unchanged',()=>{
+ const ids=['','work','personal','learn'];
+ assert.deepEqual(moveAreaChoice(ids,'learn','work',false),['','learn','work','personal']);
+ assert.deepEqual(moveAreaChoice(ids,'','learn',true),['work','personal','learn','']);
+ assert.equal(moveAreaChoice(ids,'work','work',true),ids);assert.equal(moveAreaChoice(ids,'missing','work',false),ids);
 });

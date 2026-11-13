@@ -1,3 +1,4 @@
+import { validDescriptionFormat, descriptionFormatUpdate } from "../../../lib/description-format.mjs";
 import { cleanNotifyAt, cleanText, ensureTaskSchema } from "../../../db/tasks";
 import { requestJiraHelper } from "../../../lib/jira-helper";
 import { reminderEdit } from "../../../lib/task-reminders";
@@ -14,7 +15,7 @@ import { storedAreas } from "../../../db/jira-areas";
 import { validLocalKey } from "../../../lib/jira-fields.mjs";
 
 type TaskRow = {
-  id: number; jira_key: string; jira_url: string; title: string; priority: number; status: string; source: string;
+  description_format: "todo" | "text" | null; id: number; jira_key: string; jira_url: string; title: string; priority: number; status: string; source: string;
   jira_status: string | null; jira_priority: string | null; jira_assignee: string | null;
   notes: string; notify_at: string | null; notify_fired: number; manual_order: number | null;
   jira_status_id: string | null; jira_description: string | null; jira_priority_id: string | null; jira_assignee_id: string | null;
@@ -40,7 +41,7 @@ export async function GET(request: Request) {
       id: row.id, jiraKey: row.jira_key, jiraUrl: row.jira_url, title: row.title, priority: row.priority,
       status: row.status, source: row.source, state: row.jira_status, jiraPriority: row.jira_priority,
       jiraAssignee: row.jira_assignee, notes: row.notes, notifyAt: row.notify_at, notifyFired: Boolean(row.notify_fired),
-      jiraStatusId: row.jira_status_id, description: row.jira_description || "", jiraPriorityId: row.jira_priority_id,
+      jiraStatusId: row.jira_status_id, description: row.jira_description || "", descriptionFormat: row.description_format, jiraPriorityId: row.jira_priority_id,
       jiraAssigneeId: row.jira_assignee_id, projectId: row.jira_project_id, projectKey: row.jira_project_key,
       issueTypeId: row.jira_issue_type_id, issueType: row.jira_issue_type, parentKey: row.jira_parent_key,
       dueDate: row.jira_due_date, labels: JSON.parse(row.jira_labels || "[]"), jiraUpdatedAt: row.jira_updated_at,
@@ -60,6 +61,9 @@ export async function POST(request: Request) {
   try {
     assertLocalMutation(request);
     const payload = await request.json();
+    const format = validDescriptionFormat(payload.descriptionFormat ?? "todo");
+    if (payload.subtasks !== undefined && !Array.isArray(payload.subtasks)) throw Object.assign(new Error("Subtasks must be a list."), {status:400});
+    for (const child of payload.subtasks || []) validDescriptionFormat(child.descriptionFormat ?? "todo");
     const d1 = await ensureTaskSchema();
     const areaState = await initializeJiraAreas();
     if (areaState.result.areasMigrated && !areaState.sync.ready) return Response.json({ error: areaState.sync.message }, { status: 400 });
@@ -73,12 +77,18 @@ export async function POST(request: Request) {
     const selectedTags = (await storedTags(d1)).filter((tag) => tagIds.includes(tag.id));
     if (payload.tagIds !== undefined && payload.fields?.labels !== undefined && !Array.isArray(payload.fields.labels)) return Response.json({ error: "Labels must be a list." }, { status: 400 });
     const fields = { ...payload.fields, ...(payload.tagIds !== undefined ? { labels: [...new Set([...(payload.fields?.labels || []), ...selectedTags.map((tag) => tag.jira_label!)])] } : {}) };
-    const result = await requestJiraHelper("create", "POST", { requestId: payload.requestId, projectId: payload.projectId, issueTypeId: payload.issueTypeId, fields, areaOptionId: selectedArea?.jira_option_id || null, parentKey: payload.parentKey, subtasks: payload.subtasks });
+    const result = await requestJiraHelper("create", "POST", { requestId: payload.requestId, projectId: payload.projectId, issueTypeId: payload.issueTypeId, fields, areaOptionId: selectedArea?.jira_option_id || null, parentKey: payload.parentKey, subtasks: payload.subtasks?.map((child: {requestId:string;fields:unknown}) => ({ requestId:child.requestId,fields:child.fields })) });
     let warning = typeof result.warning === "string" ? result.warning : "";
     let id: number | undefined;
     try {
       await cacheJiraResult(result, { complete: false, createdLocally: true });
       id = (await d1.prepare("SELECT id FROM tasks WHERE (jira_key = ? OR jira_key = (SELECT jira_key FROM jira_task_aliases WHERE local_key = ?)) AND source = 'jira'").bind(result.key, result.key).first<{ id: number }>())?.id;
+      if (id) { const change = descriptionFormatUpdate(id,format); await d1.prepare(change.sql).bind(...change.params).run(); }
+      for (const child of payload.subtasks || []) {
+        const key = `local:${child.requestId}`;
+        const row = await d1.prepare("SELECT id FROM tasks WHERE jira_key = ? OR jira_key = (SELECT jira_key FROM jira_task_aliases WHERE local_key = ?)").bind(key,key).first<{id:number}>();
+        if (row) { const change = descriptionFormatUpdate(row.id,child.descriptionFormat ?? "todo"); await d1.prepare(change.sql).bind(...change.params).run(); }
+      }
       const reminder = reminderEdit(payload.notifyAt === undefined ? undefined : cleanNotifyAt(payload.notifyAt));
       const assignments = [...(payload.notes === undefined ? [] : ["notes = ?"]), ...(reminder.sql ? [reminder.sql] : [])];
       if (id && assignments.length) await d1.prepare(`UPDATE tasks SET ${assignments.join(", ")} WHERE id = ?`)

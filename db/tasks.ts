@@ -48,7 +48,7 @@ export async function ensureTaskSchema() {
   }
   const result = await d1.prepare("PRAGMA table_info(tasks)").all<{ name: string }>();
   const columns = new Set((result.results ?? []).map((column) => column.name));
-  for (const name of ["jira_status_category", "jira_status_id", "jira_description", "jira_priority_id", "jira_assignee_id", "jira_project_id", "jira_project_key", "jira_issue_type_id", "jira_issue_type", "jira_parent_key", "jira_due_date", "jira_labels", "jira_pending_until", "jira_sync_status", "jira_sync_error", "jira_sync_revision", "jira_is_subtask", "jira_comments"]) {
+  for (const name of ["description_format", "jira_status_category", "jira_status_id", "jira_description", "jira_priority_id", "jira_assignee_id", "jira_project_id", "jira_project_key", "jira_issue_type_id", "jira_issue_type", "jira_parent_key", "jira_due_date", "jira_labels", "jira_pending_until", "jira_sync_status", "jira_sync_error", "jira_sync_revision", "jira_is_subtask", "jira_comments"]) {
     if (!columns.has(name)) {
       try { await d1.prepare(`ALTER TABLE tasks ADD COLUMN ${name} ${["jira_sync_revision", "jira_is_subtask"].includes(name) ? "INTEGER NOT NULL DEFAULT 0" : "TEXT"}`).run(); }
       catch (error) { if (!String(error).includes("duplicate column")) throw error; }

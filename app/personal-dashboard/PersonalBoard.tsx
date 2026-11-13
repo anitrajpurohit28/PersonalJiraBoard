@@ -23,6 +23,7 @@ import { TaskTags } from "./TaskTags";
 import { TagManager } from "./TagManager";
 import { TagFilters } from "./TagFilters";
 import { useTaskSounds } from "./useTaskSounds";
+import { AppUpdates } from "./AppUpdates";
 import { ThemeToggle } from "./ThemeToggle";
 import { AreaSwitcher } from "./AreaSwitcher";
 import { AreaManager } from "./AreaManager";
@@ -49,6 +50,8 @@ export default function PersonalBoard() {
   const [areaSync, setAreaSync] = useState<AreaSyncInfo | undefined>();
   const [areaId, setAreaId] = useState("");
   const [showAreas, setShowAreas] = useState(false);
+  const [areaOrderSaving,setAreaOrderSaving]=useState(false);
+  const areaOrderWrite=useRef(0),areaOrderBusy=useRef(false);
   const [tagIds, setTagIds] = useState<string[]>([]);
   const [taggingId, setTaggingId] = useState<number | null>(null);
   const tagWrites = useRef<Promise<void>>(Promise.resolve());
@@ -82,9 +85,10 @@ export default function PersonalBoard() {
   const remindersInFlight = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
+    const orderWrite=areaOrderWrite.current;
     const [catalog, tagCatalog] = await Promise.all([requestJson("/api/areas"), requestJson("/api/tags")]);
     const next = await fetchTasks();
-    setTasks(next); setAreas(catalog.areas); setAreaSync(catalog.sync); setTags(tagCatalog.tags);
+    setTasks(next); if(orderWrite===areaOrderWrite.current&&!areaOrderBusy.current)setAreas(catalog.areas); setAreaSync(catalog.sync); setTags(tagCatalog.tags);
     setTagIds((current) => current.filter((id) => tagCatalog.tags.some((tag: TaskTag) => tag.id === id)));
     setAreaId((current) => catalog.areas.some((area: Area) => area.id === current) ? current : "");
   }, []);
@@ -228,6 +232,13 @@ export default function PersonalBoard() {
     setAreaId(id); setQuery(""); setTagIds([]); setPriority("all"); setSource("all"); setChecked(new Set());
     try { localStorage.setItem(`${storageNamespace}-area`, id); } catch { /* Preferences are optional. */ }
   }
+  async function reorderAreas(ids:string[]){
+    if(areaOrderBusy.current)return;
+    areaOrderBusy.current=true;areaOrderWrite.current++;setAreaOrderSaving(true);
+    try{const result=await requestJson("/api/areas/order",{method:"PUT",body:JSON.stringify({ids})});setAreas(result.areas);setError("");}
+    catch(error){setError(error instanceof Error?error.message:"Unable to save area order.");}
+    finally{areaOrderWrite.current++;areaOrderBusy.current=false;setAreaOrderSaving(false);}
+  }
   async function moveTasksToArea(ids: number[], id: string | null) {
     if (await mutate(() => requestJson("/api/tasks/area", { method: "PUT", body: JSON.stringify({ ids, areaId: id }) }))) {
       setChecked(new Set());
@@ -363,10 +374,11 @@ export default function PersonalBoard() {
       <header className="app-header">
         <div className="board-heading">
           <div className="board-identity"><h1>PersonalJiraBoard</h1><p className="board-account">{session?.account || settings.email}</p></div>
-          <AreaSwitcher areas={areas} counts={areaCounts} managed={areaSync?.managed} value={areaId} onChange={chooseArea} onManage={() => setShowAreas(true)} />
+          <AreaSwitcher onReorder={reorderAreas} saving={areaOrderSaving} areas={areas} counts={areaCounts} managed={areaSync?.managed} value={areaId} onChange={chooseArea} onManage={() => setShowAreas(true)} />
         </div>
         <div className="header-actions">
           <ThemeToggle />
+          <AppUpdates />
           <button className="view-filter" aria-pressed={view === "reminders"} onClick={() => { resetFilters(); setView(view === "reminders" ? "active" : "reminders"); }} title="Show tasks with a reminder in this area">Reminders ({reminderCount})</button>
           <button className="view-filter" aria-pressed={view === "overdue"} onClick={() => { resetFilters(); setView(view === "overdue" ? "active" : "overdue"); }} title="Show overdue tasks in this area">Overdue ({overdueCount})</button>
           <button onClick={() => setShowTags(true)}>Tags</button>

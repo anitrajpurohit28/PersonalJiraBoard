@@ -1,0 +1,25 @@
+import { execFileSync } from 'node:child_process';
+import { readFile, mkdir, writeFile, stat, open } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { releaseUrl } from '../lib/update-manifest.mjs';
+import { validateArchive } from '../local/update-archive.mjs';
+const root = fileURLToPath(new URL('../', import.meta.url));
+const build = JSON.parse(await readFile(path.join(root, 'config/build-info.json'), 'utf8'));
+const config = JSON.parse(await readFile(path.join(root, 'config/app.json'), 'utf8'));
+if (build.development || build.dirty || !build.commit || config.email !== 'user@example.com') throw new Error('Only clean, account-neutral release builds may be published.');
+const platform = process.argv[2] || `${process.platform}-${process.arch}`;
+if (!['darwin-arm64','darwin-x64','win32-x64','win32-arm64'].includes(platform)) throw new Error('Unsupported release platform.');
+const source = platform.startsWith('darwin-') ? path.join(root, 'outputs/Personal Jira Board.app') : path.join(root, 'outputs/windows', platform.replace('win32-', 'win-'));
+const packagedBuild = JSON.parse(await readFile(path.join(source, platform.startsWith('darwin-') ? 'Contents/Resources/app/config/build-info.json' : 'app/config/build-info.json'), 'utf8'));
+if (packagedBuild.version !== build.version || packagedBuild.commit !== build.commit || packagedBuild.development) throw new Error('Build the matching desktop application first.');
+const directory = path.join(root, 'outputs/releases'); await mkdir(directory, { recursive:true });
+const name = `PersonalJiraBoard-${build.version}-${platform}.zip`, archive = path.join(directory,name);
+// Python's ZIP writer preserves executable permissions and relative symlinks without copying macOS resource-fork metadata.
+execFileSync(process.platform === 'win32' ? 'python' : 'python3', [path.join(root,'scripts/zip-release.py'), source, archive, platform.startsWith('darwin-') ? 'Personal Jira Board.app' : 'PersonalJiraBoard'], { stdio:'inherit' });
+await validateArchive(archive, platform.startsWith('darwin-') ? 'Personal Jira Board.app' : 'PersonalJiraBoard');
+const hash = createHash('sha256'), file = await open(archive); for await (const chunk of file.createReadStream()) hash.update(chunk);
+const { repository } = JSON.parse(await readFile(path.join(root, 'config/updates.json'), 'utf8'));
+await writeFile(path.join(directory,`${platform}.json`), JSON.stringify({ version:build.version,commit:build.commit,platform,name,sha256:hash.digest('hex'),size:(await stat(archive)).size,url:releaseUrl(repository,`v${build.version}`,name) },null,2));
+console.log(archive);

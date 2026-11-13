@@ -4,22 +4,31 @@ A small local dashboard for your Jira tasks. Create tasks and subtasks, add comm
 
 ## Configuration
 
-Before running or building, fill in `config/app.json`:
+**Before using the app from this repository, create and populate both `config/app.json` and `config/credentials.json` with your own details.**
+
+1. Copy [config/app.example.json](config/app.example.json) to `config/app.json`. Set your Jira login email and the full URL of the Jira board you want to use.
+2. Copy [config/credentials.example.json](config/credentials.example.json) to `config/credentials.json`. Set your Jira API token.
+
+Replace the example placeholders before running or building the app. Do not use the `.example.json` files directly as your configuration.
+
+Example `config/app.json`:
 
 ```json
 {
-  "email": "anitrajpurohit28@gmail.com",
-  "jiraUrl": "https://anitrajpurohit28.atlassian.net/jira/software/projects/KAN/boards/2"
+  "email": "your-jira-login@example.com",
+  "jiraUrl": "https://your-site.atlassian.net/jira/software/projects/PROJECT/boards/123"
 }
 ```
 
-Put your [Jira API token](https://id.atlassian.com/manage-profile/security/api-tokens) in the private, Git-ignored `config/credentials.json`:
+Example `config/credentials.json` using your [Jira API token](https://id.atlassian.com/manage-profile/security/api-tokens):
 
 ```json
 {
-  "apiToken": "your-Jira-API-token"
+  "apiToken": "paste-your-Jira-API-token-here"
 }
 ```
+
+Both configuration files are Git-ignored. Keep your real account settings and API token private; commit only the generic example files.
 
 The header shows **PersonalJiraBoard** with your verified Jira login email underneath. Before connection details load, it uses the email from `config/app.json`; the header contains no fixed personal email or board name. Only the configured email can connect. The project, issue types, columns, priorities and required fields come from Jira. Ordinary and scoped API tokens are supported; your account and token must have permission for the actions you use. `JIRA_API_TOKEN` can also be supplied in the process environment.
 
@@ -33,13 +42,15 @@ Existing local Areas migrate by matching their names to the Jira choices. If a c
 
 **Add, rename or remove Area choices in Jira Space settings → Fields → Area.** The app imports them automatically. Removing a choice never deletes tasks. On a fresh installation connected to the same board, Jira restores the choices and task assignments. Without a Jira Area dropdown, legacy local Areas remain available through **+ Area**.
 
+Drag Area tabs left or right to choose their order, including Unassigned. Alt+Left/Right moves a focused Area button with the keyboard. The order is saved on this device, works offline, and is retained when Jira refreshes its Area choices. Reordering tabs keeps task assignments and the selected Area unchanged. New Areas append after existing ones.
+
 Area tabs show the number of unfinished tasks and subtasks in each Area, regardless of board filters. Areas, tags, Priority, Sort, Active/Done and attention filters use the same selection highlight in both themes; the board keeps a neutral background. Active and Done show the matching entry counts for the selected Area and filters; hidden completed subtasks are excluded. Done cards are grouped by completion week (Monday through Sunday), newest weeks first, keeping each parent's subtasks with it. Jira's resolution date is used when available, then its status-category change date; offline completion uses the saved local time. Items without a known completion date have their own section.
 
 ## Board and task details
 
-Priorities are High, Medium and Low, with red, blue and gray card tints. Existing Jira Highest/Lowest values appear as High/Low; viewing them does not change the Jira issue. Description offers **Text** and **To-do list** modes. In To-do list mode, add/edit items, press Enter to add another, or paste several lines. Checking an item crosses it out and moves it below unfinished items; unchecking returns it to unfinished work. These edits auto-save and queue offline. Item text and check states are stored in the Jira description as `- [ ]` / `- [x]` lines; checked lines also have Jira strikethrough formatting. Reopening or connecting from another installation restores the checklist. Switching to Text keeps the item text and removes checklist formatting. These are description items, separate from Jira subtasks and the task’s own Done status.
+Priorities are High, Medium and Low, with red, blue and gray card tints. Existing Jira Highest/Lowest values appear as High/Low; viewing them does not change the Jira issue. Description is a single editor that mixes free text, checklists and local file or folder links. Click the writing space before, between or after existing items to place the cursor, even when the description contains only files and checklists. These empty insertion spaces are never saved as extra blank lines. Write notes normally, then click **Checklist** to insert checkbox items at the cursor; selecting note text first turns those lines into checklist items. Press Enter for the next item, or Enter on an empty item to return to notes. Checking an item crosses it out and moves it below unfinished items in that checklist. Blank lines stay as spacing, never empty checkboxes. Everything auto-saves and works offline. Notes and checkbox states sync in the Jira description as ordinary text and `- [ ]` / `- [x]` lines, so the mixed layout returns when reopening or using another installation. Description checklists are separate from Jira subtasks and the task’s own Done status.
 
-Pasted HTTP/HTTPS and www links are clickable in descriptions, comments and recent comment previews. Use Edit description to change its text; changes still auto-save. Links are also available below the text while typing and sync to Jira as links. The two most recent cached Jira comments appear on each card. Subtasks sit inside their parent card and open separately when clicked. Completed subtasks are crossed out, sorted after unfinished subtasks, and hidden inside a collapsed **Completed subtasks (N)** section on the board and in the parent task popup. Expand that section to view or reopen them. They stay with the parent until it is marked Done, when the whole group moves to Done. Board bulk selection excludes hidden completed subtasks. Selecting a parent does not select its subtasks; each entry has its own bulk-selection checkbox.
+Pasted HTTP/HTTPS and www links are clickable in descriptions, comments and recent comment previews. Edit description text directly; changes auto-save. Links are also available below the text while typing and sync to Jira as links. The two most recent cached Jira comments appear on each card. Subtasks sit inside their parent card and open separately when clicked. Completed subtasks are crossed out, sorted after unfinished subtasks, and hidden inside a collapsed **Completed subtasks (N)** section on the board and in the parent task popup. Expand that section to view or reopen them. They stay with the parent until it is marked Done, when the whole group moves to Done. Board bulk selection excludes hidden completed subtasks. Selecting a parent does not select its subtasks; each entry has its own bulk-selection checkbox.
 
 Each task and subtask shows a circular count of full days since creation: green under 7 days, amber from 7–20 days, red after 20 days. Hover for the creation date. Jira tasks use their original Jira creation date; local tasks use their local creation date. If a legacy Jira creation date is unavailable, the tooltip identifies the first-tracked date used instead. **Days** sorts oldest first using the same timestamps. The indicators also work offline.
 
@@ -61,7 +72,7 @@ Click a card to open its details. Use **Details: Right / Center**, or the layout
 
 The same `config/ui.json` can set `statusOrder` (Inbox, Now, Parked, Almost Done, Done) and `priorityOrder` (Low, Medium, High). Task buttons and board controls follow these display orders; additional Jira statuses stay available after the listed ones.
 
-Use `"center"` for a centered default. This display preference does not change the account configuration or its saved tasks. The compact toolbar keeps Active/Done and sorting stacked vertically, the Jira connection button between Details and New task, and priorities in a horizontal row. Tag filters sit between the compact search field and the sorting and priority controls, in your chosen tag order, with two tags stacked in each column. Select multiple tags to show tasks that have every selected tag (AND). For example, Work and SmallTask show only items with both tags. Each task or subtask must have all selected tags itself; parent cards may remain for context, and unrelated subtasks are hidden. Click All to clear the selection. The selected count and checkmarks show which filters are active. Tag columns wrap on smaller screens. Jira workflow states are shown by board columns. Task status and task priority use click buttons. Existing task edits save automatically after a short pause, and clicking outside, closing the popup or opening a subtask saves pending changes first. The popup stays open if required fields or saving need attention. The open task is highlighted on the board. Reminder follows Comments. Reminder and Due date use the companion board’s compact calendar popover. Reminders have scrolling 12-hour and minute columns, AM/PM buttons, hour/minute nudges and typed time entry. Type a full date/time or select it, then click Done to apply; Escape or clicking outside discards the draft. New reminders start tomorrow at the current clock time. Due date uses the same calendar and dd/mm/yyyy entry without time controls. Each Clear button sits beside its date field. Attachments is the final section below Due date and Delete task. Main task Jira IDs use a larger font than the IDs within nested subtasks.
+Use `"center"` for a centered default. This display preference does not change the account configuration or its saved tasks. The compact toolbar keeps Active/Done and sorting stacked vertically, the Jira connection button between Details and New task, and priorities in a horizontal row. Tag filters sit between the compact search field and the sorting and priority controls, in your chosen tag order, with two tags stacked in each column. Select multiple tags to show tasks that have every selected tag (AND). For example, Work and SmallTask show only items with both tags. Each task or subtask must have all selected tags itself; parent cards may remain for context, and unrelated subtasks are hidden. Click All to clear the selection. The selected count and checkmarks show which filters are active. Tag columns wrap on smaller screens. Jira workflow states are shown by board columns. Task status and task priority use click buttons. Existing task edits save automatically after a short pause, and clicking outside, closing the popup or opening a subtask saves pending changes first. The popup stays open if required fields or saving need attention. The open task is highlighted on the board. Reminder follows Comments. Reminder and Due date use the companion board’s compact calendar popover. Reminders have scrolling 12-hour and minute columns, AM/PM buttons, hour/minute nudges and typed time entry. Type a full date/time or select it, then click Done to apply; Escape or clicking outside discards the draft. New reminders start tomorrow at the current clock time. Due date uses the same calendar and dd/mm/yyyy entry without time controls. Each Clear button sits beside its date field. File references and existing Jira files appear only below the description. Main task Jira IDs use a larger font than the IDs within nested subtasks.
 
 Search matches independent words across task keys, titles, descriptions, labels, previously saved notes and updates, cached Jira comments and subtasks. A matching subtask brings up its parent card. Search uses the current Active/Done/Reminders/Overdue view and filters. **Reminders** clears the current filters and shows all entries with a reminder set, using the selected sort and their parent context. **Overdue** clears the current filters and lists unfinished tasks and subtasks whose due date is before today, with a total count on the button. Tasks due today, completed tasks and reminders without an overdue due date are excluded. Both views work with cached tasks offline. Notification permission is a separate button in Reminders. Supported examples:
 
@@ -73,7 +84,11 @@ Search matches independent words across task keys, titles, descriptions, labels,
 
 **Cmd/Ctrl+F** or **/** focuses the board search. **Esc** clears it. Existing Jira comments become searchable after caching; comments saved here are searchable immediately while offline.
 
-In comments, **Enter** saves and **Shift+Enter** starts a new line. Use **Add attachments** in task details to choose one or more files, up to 25 MB each.
+In comments, **Enter** saves and **Shift+Enter** starts a new line.
+
+Drag files, folders or app bundles from Finder or File Explorer into Description, or use **Add files** to choose local items. On Windows, choose Files or Folder from the picker menu. Links are inserted within the description alongside notes and checklists. The app saves absolute `file://` paths in Jira; contents stay on the computer. Clicking a link opens the original item. If the path is absent on another device, the app shows **file is missing on this device**. Drag across filenames or paths to select several references, then press Delete/Backspace or click **Delete selected**. Backspace at the start of the writing space after an attachment removes that attachment; Delete at the end of the writing space before it does the same. Cmd/Ctrl+Z restores removed references. Copying selected references copies their file URLs. Removing links keeps the original items. Native picking, dropped-item path resolution and opening require the desktop app. Paths sync through the usual offline queue; back up the actual files separately.
+
+Existing uploaded Jira attachments remain accessible under **Jira files** below the description. There is no separate Attachments section or manual path-entry control. New files are added as local references using **Add files** or drag-and-drop.
 
 ## Install on this Mac
 
@@ -94,7 +109,13 @@ After changing the email or Jira URL, quit the installed app and run `npm run de
 
 For browser development, run `npm run dev` and open [localhost:3100](http://localhost:3100). `npm start` builds and runs the production version.
 
-Windows uses the same dashboard and Jira connector. On Windows 11 with x64 Node.js 22.13+, .NET 8 SDK and WebView2, run `npm.cmd ci`, configure the email/board URL and private API token, then `npm.cmd run windows:build` and `npm.cmd run windows:start`. Subsequent launches can use `outputs\windows\win-x64\PersonalTaskBoard.exe` inside this checkout. See [Windows setup](desktop/windows/README.md) for the full instructions, offline storage, upgrades and browser mode. Install dependencies afresh on Windows; do not copy Mac `node_modules`.
+Windows uses the same dashboard and Jira connector. On Windows 11 with x64 Node.js 22.13+, .NET 8 SDK and WebView2, run `npm.cmd ci`, configure the email/board URL and private API token, then `npm.cmd run windows:build` and `npm.cmd run windows:start`. Subsequent launches can use `outputs\windows\win-x64\PersonalTaskBoard.exe` in the complete portable output folder, which includes Node and app files. See [Windows setup](desktop/windows/README.md) for the full instructions, offline storage, upgrades and browser mode. Install dependencies afresh on Windows; do not copy Mac `node_modules`.
+
+## App updates
+
+Use **Update → Download update → Restart & update** in either desktop app. Pushing a commit to `main` triggers tested, versioned GitHub Releases for macOS (Apple Silicon/Intel) and Windows (x64/ARM64). Versions use the commit count, for example `1.0.9`. A local commit must be pushed and its release build must succeed before other installations can download it. The first app with the updater requires one manual installation.
+
+Updates preserve account settings, credentials, local tasks and queued offline changes, and back up the current account before replacing application files. Official releases keep email/board URL in an external `PersonalJiraBoard/account.json`; on a fresh installation, setup asks for them. See [release setup and recovery](desktop/UPDATES.md).
 
 ## Sync and local data
 
@@ -103,7 +124,7 @@ Windows uses the same dashboard and Jira connector. On Windows 11 with x64 Node.
 - Changes are saved on this device before syncing. The **Jira connected / Offline** button shows the connection in green or red. Click it to pause syncing or reconnect. An outage does not block cached tasks; the helper reconnects automatically every 15 seconds unless you explicitly pause it. Pending changes survive quitting and restarting.
 - The pending-changes button shows what is waiting, blocked or needs review. Unrelated Jira edits are merged. Conflicting shared fields are held for review; you can keep your changes or discard them. If Jira may have accepted a creation, comment or upload before a connection failed, the app checks its saved marker or file content before retrying. Unconfirmed results require review instead of blindly repeating the request.
 - New subtasks append at the bottom of their parent’s list. Add subtasks from their parent task and rename them directly in the parent's details. Titles save automatically, including when you click away. Subtasks use the compact `Jira ID | description` layout. Click a Jira ID to open its details in this app, or **WebJira** to open the issue on the Jira website. Subtasks are created after their parent has synced. Status changes and bulk actions use Jira workflow permissions. Jira may reject a cached field or transition if its configuration changes while you are offline; the saved change remains in the queue for review.
-- Attachments added here are cached immediately, with a 25 MB limit per file. Existing Jira attachments must be downloaded once to be available offline. Existing comments and task details become available offline after they have been loaded; additional tasks are cached in the background. Card comment previews refresh automatically while the app runs.
+- New file references store paths only; the original files stay on the device. Existing Jira attachments must be downloaded once to be available offline. Existing comments and task details become available offline after they have been loaded; additional tasks are cached in the background. Card comment previews refresh automatically while the app runs.
 - Deletion permanently removes selected Jira issues after confirmation and successful sync. Unselected subtasks are never deleted implicitly. Pending deletions remain in the sync queue, where they can be discarded before being sent.
 - A board URL includes unassigned issues and subtasks; a site-only URL limits issues to those assigned to or reported by you. This tool covers tasks, subtasks, shared fields, workflow, comments, attachments and issue links. Backlogs, sprint planning and reports remain in Jira.
 - Priority sorting uses High → Medium → Low, oldest-created first within each priority, regardless of due dates and reminders. The same sorting applies in Active, Done, Reminders and Overdue. Days sorting keeps overdue tasks and fired reminders first, then oldest tasks. Drag cards or subtasks to save a manual order on this device; both sort buttons turn off. Click Priority or Days to resume automatic sorting.

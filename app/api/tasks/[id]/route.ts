@@ -1,3 +1,4 @@
+import { validDescriptionFormat, descriptionFormatUpdate } from "../../../../lib/description-format.mjs";
 import { cleanNotifyAt, cleanPriority, cleanText, ensureTaskSchema, isWorkflowStatus, parseTaskId } from "../../../../db/tasks";
 import { requestJiraHelper } from "../../../../lib/jira-helper";
 import { cacheJiraResult } from "../../../../lib/jira-result";
@@ -15,6 +16,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     let current = await d1.prepare("SELECT * FROM tasks WHERE id = ?").bind(id).first<Row>();
     if (!current) return Response.json({ error: "Task not found." }, { status: 404 });
     const payload = await request.json();
+    if (payload.descriptionFormat !== undefined) validDescriptionFormat(payload.descriptionFormat);
     if (payload.notifyFired !== undefined) {
       if (payload.notifyFired !== true || typeof payload.expectedNotifyAt !== "string" || !cleanNotifyAt(payload.expectedNotifyAt) || Object.keys(payload).some((key) => !["notifyFired", "expectedNotifyAt"].includes(key))) return Response.json({ error: "Change or clear the reminder to reset it." }, { status: 400 });
       const statement = fireReminderStatement(id, payload.expectedNotifyAt);
@@ -48,6 +50,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         payload.notes === undefined ? current.notes : cleanText(payload.notes, 8000), ...reminder.params, done ? 1 : 0,
         done ? current.completed_at || new Date().toISOString() : null, status, id,
       ).run();
+    }
+    if (payload.descriptionFormat !== undefined) {
+      const change = descriptionFormatUpdate(id,payload.descriptionFormat);
+      await d1.prepare(change.sql).bind(...change.params).run();
     }
     return Response.json({ ok: true, warning });
   } catch (error) { return errorResponse(error, "Unable to save task."); }

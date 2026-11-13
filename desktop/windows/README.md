@@ -2,7 +2,11 @@
 
 The Windows desktop app runs the same dashboard, database routes, and Jira connector as macOS. Tasks, subtasks, comments, attachments, Areas, labels/tags, filtering, sorting, reminders, themes, and offline sync use the shared code. Use **Ctrl** instead of **Cmd** for task-tag shortcuts and search. The Windows shell uses Microsoft Edge WebView2 for its window.
 
-## One-time setup
+## Install a published release
+
+Download the Windows ZIP for your PC from [GitHub Releases](https://github.com/anitrajpurohit28/PersonalJiraBoard/releases), extract the whole folder to a writable location, and open **PersonalTaskBoard.exe**. Node and .NET are bundled; Microsoft Edge WebView2 is required. Setup asks for your email and Jira board URL on a fresh PC, then the app accepts your Jira API token. Use **Update** for future versions. The workflow must first be committed/pushed and complete its first release before downloads exist.
+
+## Build from source
 
 Use **Windows 11** and install:
 
@@ -73,9 +77,7 @@ outputs\windows\win-x64\PersonalTaskBoard.exe
 
 For subsequent launches, double-click that executable or use `npm.cmd run windows:start`. You can create a desktop shortcut to it. `npm.cmd run windows` builds and opens it in one command.
 
-Keep the executable in its output folder inside the repository. It needs the source tree, installed `node_modules`, Node, and WebView2 to run; it is not a standalone copy of the whole app. The .NET runtime is included in the executable, so a separate .NET runtime installation is unnecessary after building.
-
-If you move the executable elsewhere, set `PERSONAL_TASK_BOARD_PROJECT_DIR` to the full repository path before opening it. Do not put credentials in the executable.
+Keep the entire output folder together: the executable, `app/`, `runtime/`, Runtime.json and BuildID.txt. It can be moved outside the repository and includes Node, application dependencies and .NET. The existing `PERSONAL_TASK_BOARD_PROJECT_DIR` developer fallback is supported for older executable-only builds. A source build reads your configured email/board URL; API tokens are excluded from the distributable. Enter/save the API token in the app when first connecting on another PC.
 
 The app starts the dashboard at `http://localhost:3120/` and the Jira helper at `http://127.0.0.1:4327`, without console windows. It checks the configuration and protocol of services already using those ports. Close an older/different board app if a port-conflict message appears. Closing the window stops only the services this launcher started.
 
@@ -100,17 +102,15 @@ Open `http://localhost:3100/`. Leave the terminal open; press Ctrl+C to stop. Fo
 
 The same dashboard features work in browser mode, but browser-reserved shortcuts such as Ctrl+W may be intercepted by the browser. Use the desktop app for those custom tag shortcuts.
 
+## Local file references
+
+Description mixes editable notes, checklists and local links. Click Checklist to insert checkbox items at the cursor. Drop files or folders from File Explorer into Description, or click Add files and choose Files for a multiple-file selection or Folder for a folder. Multiple folders can also be dropped together. Their file paths sync in the Jira description; file contents stay on the PC. Clicking a reference opens the original document. A missing path, including a Mac path on this PC, shows “file is missing on this device.” Previously uploaded Jira files remain accessible below the description. Drag across links to select them, then press Backspace/Delete or use Delete selected. Backspace at the text cursor immediately after a file removes its reference; Delete immediately before it does the same. Ctrl+Z undoes removal; Ctrl+Shift+Z redoes it. Original files are not deleted. Back up original files separately.
+
 ## Updating
 
-Quit the Windows app, update the source, then run:
+Use **Update → Download update → Restart & update**. The app downloads the matching package, verifies its checksum, backs up local data, closes and reopens itself. Your Jira settings and offline queue are preserved. See [release publishing and recovery](../UPDATES.md).
 
-```powershell
-npm.cmd ci
-npm.cmd run windows:build
-npm.cmd run windows:start
-```
-
-Keep your private `config/credentials.json` and desired `config/app.json` settings. The local data folders below are separate from build output and are not replaced by rebuilding.
+To rebuild manually from changed source, quit the app, run `npm.cmd ci`, `npm.cmd run windows:build`, then `npm.cmd run windows:start`. Neither method replaces the separate data folders below.
 
 ## Data and recovery
 
@@ -120,6 +120,7 @@ Keep your private `config/credentials.json` and desired `config/app.json` settin
 | `%LOCALAPPDATA%\PersonalTaskBoard\private\personal-<configuration-id>\workspace-v1.json` | Offline Jira snapshot and pending sync queue |
 | `%LOCALAPPDATA%\PersonalTaskBoard\private\personal-<configuration-id>\attachments\` | Cached and pending attachment files |
 | `%LOCALAPPDATA%\PersonalTaskBoard\private\personal-<configuration-id>\credentials.json` | Token, if saved through Connect Jira |
+| `%LOCALAPPDATA%\PersonalJiraBoard\account.json` | Email and Jira board URL retained across app updates |
 | `%LOCALAPPDATA%\PersonalJiraBoard\WebView2\` | Desktop browser profile and display preferences |
 | `%LOCALAPPDATA%\PersonalTaskBoard\Logs\app.log` | Startup diagnostics |
 
