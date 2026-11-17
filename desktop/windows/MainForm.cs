@@ -21,6 +21,8 @@ internal sealed class MainForm : Form
     private readonly int appProtocolVersion;
     private readonly int helperProtocolVersion;
     private readonly Dictionary<string, System.Media.SoundPlayer> taskSounds = new();
+    private readonly Dictionary<string, Icon> themeIcons = new();
+    private string? iconTheme;
     private readonly HashSet<string> tagShortcutKeys = new(StringComparer.Ordinal);
     private enum ServiceState { Missing, Ready, Conflict }
 
@@ -55,6 +57,7 @@ internal sealed class MainForm : Form
         MinimumSize = new Size(1040, 680);
         StartPosition = FormStartPosition.CenterScreen;
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        try { ConfigureApplicationIcon(File.ReadAllText(IconThemePath).Trim()); } catch (IOException) {}
         Controls.Add(webView);
 
         Shown += async (_, _) => await StartApplicationAsync();
@@ -156,6 +159,33 @@ internal sealed class MainForm : Form
         Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
     }
 
+    private static string IconThemePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PersonalJiraBoard", "icon-theme.txt");
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr icon);
+
+    private void ConfigureApplicationIcon(string? theme)
+    {
+        if (theme is not ("light" or "dark") || iconTheme == theme) return;
+        try {
+            if (!themeIcons.TryGetValue(theme, out var icon)) {
+                using var source = Image.FromFile(Path.Combine(projectDirectory, "desktop", "assets", theme == "dark" ? "PersonalTaskBoardDark.png" : "PersonalTaskBoard.png"));
+                using var bitmap = new Bitmap(256, 256);
+                using (var graphics = Graphics.FromImage(bitmap)) {
+                    graphics.Clear(Color.Transparent);
+                    graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(source, new Rectangle(10, 10, 236, 236));
+                }
+                var handle = bitmap.GetHicon();
+                try { icon = (Icon)Icon.FromHandle(handle).Clone(); } finally { DestroyIcon(handle); }
+                themeIcons[theme] = icon;
+            }
+            Icon = icon; iconTheme = theme;
+            Directory.CreateDirectory(Path.GetDirectoryName(IconThemePath)!);
+            File.WriteAllText(IconThemePath, theme);
+        } catch (Exception error) { WriteLog($"[windows] Theme icon unavailable: {error.Message}"); }
+    }
+
     private void ConfigureTagShortcuts()
     {
         webView.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
@@ -165,6 +195,10 @@ internal sealed class MainForm : Form
             {
                 using var message = JsonDocument.Parse(eventArgs.WebMessageAsJson);
                 var body = message.RootElement;
+                if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("type", out var themeType) && themeType.ValueKind == JsonValueKind.String && themeType.GetString() == "task-theme") {
+                    if (body.TryGetProperty("theme", out var theme) && theme.ValueKind == JsonValueKind.String) ConfigureApplicationIcon(theme.GetString());
+                    return;
+                }
                 if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("type", out var filesType) && filesType.ValueKind == JsonValueKind.String && filesType.GetString() == "task-files")
                 {
                     HandleLocalFiles(body, eventArgs.AdditionalObjects); return;
@@ -353,6 +387,9 @@ internal sealed class MainForm : Form
         httpClient.Dispose();
         foreach (var player in taskSounds.Values) { player.Stop(); player.Dispose(); }
         taskSounds.Clear();
+        Icon = null;
+        foreach (var icon in themeIcons.Values) icon.Dispose();
+        themeIcons.Clear();
         StopProcess(boardProcess);
         StopProcess(jiraProcess);
     }

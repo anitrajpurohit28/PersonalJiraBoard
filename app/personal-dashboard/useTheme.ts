@@ -2,6 +2,8 @@
 import { useSyncExternalStore } from "react";
 import { defaultTheme, themeStorageKey, type Theme } from "../../lib/theme";
 
+import { syncThemeIcon } from "./native-theme";
+
 const eventName = "personal-board-theme";
 let fallback: Theme = defaultTheme;
 const serverSnapshot = () => defaultTheme;
@@ -10,8 +12,9 @@ function snapshot(): Theme {
   return fallback;
 }
 function subscribe(callback: () => void) {
-  const update = () => { document.documentElement.dataset.theme = snapshot(); callback(); };
-  document.documentElement.dataset.theme = snapshot();
+  const apply = () => { const theme = snapshot(); document.documentElement.dataset.theme = theme; syncThemeIcon(theme); };
+  const update = () => { apply(); callback(); };
+  apply();
   window.addEventListener("storage", update); window.addEventListener(eventName, update);
   return () => { window.removeEventListener("storage", update); window.removeEventListener(eventName, update); };
 }

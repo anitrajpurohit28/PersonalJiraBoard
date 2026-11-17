@@ -24,6 +24,7 @@ zsh desktop/build-app-icon.sh
 cp desktop/Info.plist "$CONTENTS_DIR/Info.plist"
 cp desktop/AppIcon.icns "$RESOURCES_DIR/AppIcon.icns"
 cp work/personal-task-board-icon-1024.png "$RESOURCES_DIR/AppIcon.png"
+cp work/personal-task-board-icon-dark-1024.png "$RESOURCES_DIR/AppIconDark.png"
 date -u +%Y%m%dT%H%M%SZ > "$RESOURCES_DIR/BuildID.txt"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$CONTENTS_DIR/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$CONTENTS_DIR/Info.plist"

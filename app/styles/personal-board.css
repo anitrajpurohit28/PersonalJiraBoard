@@ -477,3 +477,13 @@ button.tag-filter-reset[aria-pressed=true],
 .area-options button.area-drop-before { box-shadow:inset 3px 0 var(--focus); }
 .area-options button.area-drop-after { box-shadow:inset -3px 0 var(--focus); }
 .area-switcher[aria-busy=true] .area-options { opacity:.8; }
+
+.inline-link-editor { position:relative; min-width:0; }
+.inline-link-editor .inline-link-input { position:relative; z-index:1; }
+.inline-link-editor.has-inline-links .inline-link-input { color:transparent !important; caret-color:var(--text); background:transparent !important; }
+.inline-link-editor.has-inline-links .inline-link-input::selection { color:var(--text); background:var(--selected-bg); }
+.inline-link-mirror { position:absolute; inset:0; box-sizing:border-box; border-style:solid; border-color:transparent; overflow:hidden; pointer-events:none; color:var(--text); z-index:2; white-space:pre-wrap; overflow-wrap:break-word; }
+.inline-link-mirror a { pointer-events:auto; color:var(--link); text-decoration:underline; cursor:pointer; }
+.inline-link-single .inline-link-mirror { white-space:pre; overflow-wrap:normal; }
+.description-check-row .checklist-item-content .inline-link-editor input { width:100%; background:transparent; border:0; padding:4px 0; color:var(--text); box-shadow:none; }
+.checklist-done .inline-link-mirror { text-decoration:line-through; color:var(--muted); }

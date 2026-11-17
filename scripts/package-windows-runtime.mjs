@@ -11,6 +11,8 @@ if (process.env.PJB_RELEASE_BUILD !== '1') { const credential = await loadApiTok
 await rm(app, { recursive: true, force: true }); await mkdir(app, { recursive: true });
 for (const directory of ['app','config','db','lib','local','public','scripts','worker','node_modules']) await cp(path.join(root,directory), path.join(app,directory), { recursive:true, dereference:true, filter: file => !['credentials.json','.DS_Store','.cache','.vite'].includes(path.basename(file)) });
 await mkdir(path.join(app,'desktop')); for (const file of ['update-agent.mjs','update-install.mjs']) await cp(path.join(root,'desktop',file), path.join(app,'desktop',file));
+await mkdir(path.join(app,'desktop/assets'),{recursive:true});
+for (const file of ['PersonalTaskBoard.png','PersonalTaskBoardDark.png']) await cp(path.join(root,'desktop/assets',file),path.join(app,'desktop/assets',file));
 for (const file of ['package.json','package-lock.json','tsconfig.json','vite.config.ts']) await cp(path.join(root,file),path.join(app,file));
 execFileSync(process.env.ComSpec || 'cmd.exe', ['/d','/s','/c','npm.cmd prune --omit=dev --ignore-scripts --no-audit --no-fund'], { cwd: app, stdio:'inherit' });
 await mkdir(path.join(target,'runtime'),{recursive:true}); await cp(process.execPath,path.join(target,'runtime/node.exe'));

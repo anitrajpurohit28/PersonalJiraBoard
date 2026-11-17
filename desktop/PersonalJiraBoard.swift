@@ -147,17 +147,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func configureApplicationIcon() {
+    private var iconTheme: String?
+    private var themeIcons: [String: NSImage] = [:]
+
+    private func configureApplicationIcon(theme: String? = nil) {
+        let theme = theme ?? UserDefaults.standard.string(forKey: "appIconTheme") ?? "light"
+        guard ["light", "dark"].contains(theme), iconTheme != theme else { return }
         // Finder normally reads AppIcon.icns from Info.plist. Assigning the
         // bundled high-resolution PNG as well makes the running Dock icon
         // update immediately, even if macOS cached an older local build.
-        guard
-            let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
-            let icon = NSImage(contentsOf: iconURL)
-        else {
-            return
+        if themeIcons[theme] == nil,
+           let url = Bundle.main.url(forResource: theme == "dark" ? "AppIconDark" : "AppIcon", withExtension: "png") {
+            themeIcons[theme] = NSImage(contentsOf: url)
         }
+        guard let icon = themeIcons[theme] else { return }
         NSApp.applicationIconImage = icon
+        iconTheme = theme
+        UserDefaults.standard.set(theme, forKey: "appIconTheme")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -267,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         configuration.userContentController.add(self, name: "taskTagShortcuts")
         configuration.userContentController.add(self, name: "taskSounds")
+        configuration.userContentController.add(self, name: "taskTheme")
         configuration.userContentController.add(self, name: "taskUpdates")
         configuration.userContentController.add(self, name: "taskFiles")
         webView = TagShortcutWebView(frame: .zero, configuration: configuration)
@@ -291,6 +298,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         guard message.frameInfo.isMainFrame,
               let origin = message.webView?.url, origin.scheme == "http",
               origin.host == "localhost", origin.port == desktopBoardPort else { return }
+        if message.name == "taskTheme", let theme = message.body as? String {
+            configureApplicationIcon(theme: theme); return
+        }
         if message.name == "taskFiles", let body = message.body as? [String: Any] {
             handleLocalFiles(body); return
         }

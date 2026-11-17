@@ -34,6 +34,7 @@ mkdir -p "$ICONSET_DIR" "$PROJECT_DIR/work"
   "$PROJECT_DIR/desktop/render-app-icon.swift" \
   -o "$RENDERER"
 "$RENDERER" "$SOURCE_IMAGE" "$SQUARE_SOURCE"
+"$RENDERER" "$PROJECT_DIR/desktop/assets/PersonalTaskBoardDark.png" "$PROJECT_DIR/work/personal-task-board-icon-dark-1024.png"
 
 # These filenames document the standard macOS icon sizes. The final packaging
 # step below uses the matching PNGs to create a portable .icns container.
