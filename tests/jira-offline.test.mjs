@@ -257,8 +257,16 @@ test("disk workspace is private, persistent and refuses corrupt state without ov
     const store = workspaceStore(directory), value = { queue: [{ body: "Saved change" }] }, blobKey = `file-${randomUUID()}`;
     await store.writeState(value); await store.writeBlob(blobKey, Buffer.from("File"));
     assert.deepEqual(await workspaceStore(directory).readState(), value);
-    assert.equal((await stat(path.join(directory, "workspace-v1.json"))).mode & 0o777, 0o600);
-    assert.equal((await stat(path.join(directory, "attachments", blobKey))).mode & 0o777, 0o600);
+    const stateFile = path.join(directory, "workspace-v1.json"), blobFile = path.join(directory, "attachments", blobKey);
+    assert.equal((await stat(stateFile)).isFile(), true);
+    assert.equal((await stat(blobFile)).isFile(), true);
+    assert.equal(await readFile(blobFile, "utf8"), "File");
+    // Windows uses ACLs; Node's stat mode does not represent POSIX 0600 there.
+    // Keep all persistence/corruption checks on Windows, and check Unix modes where supported.
+    if (process.platform !== "win32") {
+      assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
+      assert.equal((await stat(blobFile)).mode & 0o777, 0o600);
+    }
     assert.throws(() => store.writeBlob("../outside", Buffer.from("x")), /Invalid/);
     await writeFile(path.join(directory, "workspace-v1.json"), "bad-json");
     await assert.rejects(() => store.readState(), /kept/);
