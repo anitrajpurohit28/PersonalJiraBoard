@@ -8,13 +8,13 @@ Download the Windows ZIP for your PC from [GitHub Releases](https://github.com/a
 
 ## Build from source
 
-Use **Windows 11** and install:
+Use **Windows 10 (22H2) or Windows 11** and install:
 
-- [Node.js](https://nodejs.org/en/download), **Windows x64**, version 22.13 or newer (24 LTS is a suitable choice). Node includes npm. The pinned local database runtime requires x64 Node; on a Windows ARM PC, use the x64 Node installer and x64 app through Windows emulation.
+- [Node.js](https://nodejs.org/en/download), **Windows x64**, version 22.16 or newer (24 LTS is a suitable choice). Node includes npm. Use x64 Node for the packaged runtime; on a Windows ARM PC, use the x64 Node installer and x64 app through Windows emulation.
 - [.NET 8 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/8.0), needed to build the desktop launcher.
 - [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/), if it is not already installed.
 
-Windows 11 is the supported target because the [local Wrangler/workerd runtime requires it](https://developers.cloudflare.com/workers/wrangler/install-and-update/). A Cloudflare account or deployment is not required; the database runs locally.
+Windows uses Node SQLite directly, so it does not start the Windows 11-only workerd runtime. Existing cached SQLite databases are reused; fresh installations store the cache in `data/<configuration>/native/tasks.sqlite`. Keep all data directories when upgrading. Windows 10 and Windows 11 native execution still need verification on a Windows PC; shared runtime tests on macOS do not substitute for that check.
 
 Copy or clone the **latest source** to a writable folder, for example `C:\Tools\Anit_personal_JiraBoard`. Do not copy the Mac's `node_modules`, `outputs`, `dist`, `.vite`, `.vinext`, or `.wrangler` folders: dependencies and executables must be installed/built on Windows.
 

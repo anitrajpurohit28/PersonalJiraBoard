@@ -13,14 +13,14 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw "The .NET 8 SDK is required to build the Windows app. Install it from https://dotnet.microsoft.com/download/dotnet/8.0"
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    throw "Node.js 22.13 or newer is required to run Personal Jira Board."
+    throw "Node.js 22.16 or newer is required to run Personal Jira Board."
 }
 $NodeInfo = & node -p 'JSON.stringify({ version: process.versions.node, arch: process.arch })'
 if ($LASTEXITCODE -ne 0) { throw "Node.js could not start." }
 $NodeInfo = $NodeInfo | ConvertFrom-Json
-if ([version]$NodeInfo.version -lt [version]"22.13.0") { throw "Install Node.js 22.13 or newer, then reopen the terminal." }
-# The pinned workerd runtime ships a Windows x64 binary, so use x64 Node even on ARM PCs.
-if ($NodeInfo.arch -ne "x64") { throw "Install the Windows x64 version of Node.js. The current local database runtime requires x64 Node (including on ARM PCs)." }
+if ([version]$NodeInfo.version -lt [version]"22.16.0") { throw "Install Node.js 22.16 or newer, then reopen the terminal." }
+# Portable packages currently bundle x64 Node for both native shell architectures.
+if ($NodeInfo.arch -ne "x64") { throw "Install the Windows x64 version of Node.js. The portable package currently bundles x64 Node (including on ARM PCs)." }
 if (-not $Runtime) { $Runtime = "win-x64" }
 if ($Runtime -notin @("win-x64", "win-arm64")) { throw "Only x64 and ARM64 Windows builds are supported." }
 if (-not (Test-Path (Join-Path $ProjectDirectory "node_modules\vinext\dist\cli.js"))) {

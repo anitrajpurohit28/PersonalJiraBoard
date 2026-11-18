@@ -92,7 +92,7 @@ Existing uploaded Jira attachments remain accessible under **Jira files** below 
 
 ## Install on this Mac
 
-Requires Node.js 22.13+ and Apple's command-line developer tools to build:
+Requires Node.js 22.16+ and Apple's command-line developer tools to build:
 
 ```bash
 npm install
@@ -109,7 +109,7 @@ After changing the email or Jira URL, quit the installed app and run `npm run de
 
 For browser development, run `npm run dev` and open [localhost:3100](http://localhost:3100). `npm start` builds and runs the production version.
 
-Windows uses the same dashboard and Jira connector. On Windows 11 with x64 Node.js 22.13+, .NET 8 SDK and WebView2, run `npm.cmd ci`, configure the email/board URL and private API token, then `npm.cmd run windows:build` and `npm.cmd run windows:start`. Subsequent launches can use `outputs\windows\win-x64\PersonalTaskBoard.exe` in the complete portable output folder, which includes Node and app files. See [Windows setup](desktop/windows/README.md) for the full instructions, offline storage, upgrades and browser mode. Install dependencies afresh on Windows; do not copy Mac `node_modules`.
+Windows uses the same dashboard and Jira connector. On Windows 10 (22H2) or Windows 11 with x64 Node.js 22.16+, .NET 8 SDK and WebView2, run `npm.cmd ci`, configure the email/board URL and private API token, then `npm.cmd run windows:build` and `npm.cmd run windows:start`. Subsequent launches can use `outputs\windows\win-x64\PersonalTaskBoard.exe` in the complete portable output folder, which includes Node and app files. See [Windows setup](desktop/windows/README.md) for the full instructions, offline storage, upgrades and browser mode. Install dependencies afresh on Windows; do not copy Mac `node_modules`.
 
 ## App updates
 
@@ -155,3 +155,5 @@ Tags are the task editor’s single control for Jira Labels. Existing task tags 
 ## Task sounds
 
 Marking a task or subtask Done plays a single triangle-bell strike with a natural decay after the change is saved locally. A newly fired reminder plays a triangle bell ringing for exactly 15 seconds once, remains set/red, and stays first until cleared, rescheduled or completed. Opening the app or refreshing existing Done tasks does not play completion sounds. The app must be open and the computer awake for reminders to fire. Native macOS/Windows playback uses bundled WAV files and works offline; browser playback unlocks on the first click or key press, with a blocked reminder held until that interaction. Sounds use the normal system output and volume. Regenerate the bundled sounds with `node scripts/render-task-sounds.mjs` after changing their patterns in `lib/task-sounds.mjs`.
+
+Windows uses Node SQLite instead of workerd for Windows 10 compatibility; macOS retains the existing runtime (macOS 13.5 or later). Existing cached databases are reused. Windows native execution must still be checked on a Windows PC.

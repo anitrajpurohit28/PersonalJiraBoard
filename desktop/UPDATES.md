@@ -44,3 +44,7 @@ For macOS, extract the matching ZIP and place **Personal Jira Board.app** in App
 - `desktop/update-agent.mjs`: installation, backup, health check and rollback.
 
 Generated releases, build metadata, local configuration and credentials remain Git-ignored. Review and commit the updater source and workflow to activate this pipeline; merely running a local build does not publish a release.
+
+## Recovering from an older Windows updater error
+
+If an older app shows `stderr maxBuffer length exceeded`, download the matching latest Windows ZIP from GitHub Releases manually. Quit the app completely, extract the entire ZIP into a new writable folder, and run `PersonalTaskBoard.exe` there. Keep the old folder until the new app opens successfully. Do not delete `%LOCALAPPDATA%\PersonalTaskBoard` or `%LOCALAPPDATA%\PersonalJiraBoard`: these contain your cache, queued offline work, credentials and settings. The replacement uses the same external data; avoid running both versions together. Updated releases drain process output continuously and use quiet ZIP extraction while retaining the real extraction error message.

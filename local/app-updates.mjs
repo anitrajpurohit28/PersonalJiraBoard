@@ -1,8 +1,6 @@
 import { readFile, writeFile, mkdir, cp, chmod, rm, open } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import updateSettings from '../config/updates.json' with { type: 'json' };
@@ -11,7 +9,8 @@ import { configurationId, storageNamespace, localSettings } from '../config/sett
 import { compareVersions, releaseUrl, validateManifest, validateRepository } from '../lib/update-manifest.mjs';
 import { validateArchive } from './update-archive.mjs';
 import { appSupport, updateRoot, accountPath, supportRoot } from './update-paths.mjs';
-const run = promisify(execFile), root = fileURLToPath(new URL('../', import.meta.url));
+import { runUpdateCommand as run, extractUpdateArchive } from './update-process.mjs';
+const root = fileURLToPath(new URL('../', import.meta.url));
 const redirectHosts = new Set(['github.com', 'api.github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com']);
 export async function githubFetch(url, { fetcher = fetch, signal = AbortSignal.timeout(600000) } = {}) {
   for (let redirects = 0; redirects < 6; redirects++) {
@@ -72,8 +71,7 @@ export class AppUpdater {
       const packageRoot = this.platform.startsWith('darwin-') ? 'Personal Jira Board.app' : 'PersonalJiraBoard';
       await validateArchive(archive, packageRoot);
       const unpack = path.join(directory, 'unpacked'); await mkdir(unpack);
-      if (process.platform === 'darwin') await run('/usr/bin/ditto', ['-x', '-k', archive, unpack]);
-      else await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:PJB_ARCHIVE -DestinationPath $env:PJB_UNPACK'], { env: { ...process.env, PJB_ARCHIVE: archive, PJB_UNPACK: unpack } });
+      await extractUpdateArchive(archive, unpack);
       const incoming = path.join(unpack, packageRoot);
       const resources = process.platform === 'darwin' ? path.join(incoming, 'Contents/Resources') : incoming;
       const info = JSON.parse(await readFile(path.join(resources, 'app/config/build-info.json'), 'utf8'));
