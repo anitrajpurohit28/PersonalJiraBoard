@@ -153,3 +153,13 @@ Use the Jira account email and site shown in **Connect Jira** to confirm the app
 If upgrading from an older build that silently closes the dialog, close the app completely, rebuild the latest source and reopen it. Authentication and project-access errors still require correcting the token, account or permissions; offline task access is not confirmation that Jira authentication succeeded.
 
 The connection indicator follows `/api/jira/session`, not Windows/browser internet-detection hints. An offline browser hint triggers a fresh service check. A task-cache or sync error is displayed separately and does not override a confirmed Jira connection.
+
+## Build a fresh copy when an older output is locked
+
+To compile into a separate folder without replacing the existing EXE, run this in Git Bash from the repository root:
+
+```bash
+npm run windows:build -- -BuildName fresh
+```
+
+This creates the complete portable app at `outputs/windows/win-x64-fresh/`. Choose another name if that folder is already in use. Finish edits and quit the old app before launching the new `outputs/windows/win-x64-fresh/PersonalTaskBoard.exe`, so both instances do not compete for the same local services. Keep the whole portable folder together. The option does not move, delete or reset user data. Release builds retain their standard output paths and reject named folders.

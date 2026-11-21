@@ -1,6 +1,8 @@
 param(
     [ValidateSet("win-x64", "win-arm64")]
-    [string]$Runtime
+    [string]$Runtime,
+    [ValidatePattern("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+    [string]$BuildName
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,7 +28,13 @@ if ($Runtime -notin @("win-x64", "win-arm64")) { throw "Only x64 and ARM64 Windo
 if (-not (Test-Path (Join-Path $ProjectDirectory "node_modules\vinext\dist\cli.js"))) {
     throw "Dependencies are missing. Run npm.cmd ci in the project folder before building the Windows app."
 }
-$OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$Runtime"
+# Named local builds leave the existing portable app untouched. Release builds
+# retain the standard architecture-specific path expected by release packaging.
+if ($BuildName -and $env:PJB_RELEASE_BUILD -eq "1") {
+    throw "Named output folders are for local builds only. Release builds use the standard output folder."
+}
+$OutputFolder = if ($BuildName) { "$Runtime-$BuildName" } else { $Runtime }
+$OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$OutputFolder"
 
 # Windows cannot replace a running executable. Check before generating assets or
 # publishing; never stop the user's app or discard unsaved edits automatically.
@@ -37,7 +45,8 @@ if (Test-Path -LiteralPath $OutputExecutable) {
         $OutputProbe.Dispose()
     }
     catch {
-        throw "Cannot replace '$OutputExecutable': it is in use or not writable. Finish your edits and close Personal Jira Board completely, then retry npm run windows:build. If it remains locked, check Task Manager for PersonalTaskBoard.exe and check folder write permissions."
+        $LockReason = $_.Exception.GetBaseException().Message
+        throw "Cannot replace '$OutputExecutable'. Windows reported: $LockReason Finish your edits and close the app, or build into a separate folder with: npm run windows:build -- -BuildName fresh. If 'fresh' is already in use, choose another name. No running process was stopped."
     }
 }
 
