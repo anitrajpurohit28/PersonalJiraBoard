@@ -22,6 +22,7 @@ internal sealed class MainForm : Form
     private readonly int helperProtocolVersion;
     private readonly Dictionary<string, System.Media.SoundPlayer> taskSounds = new();
     private readonly Dictionary<string, Icon> themeIcons = new();
+    private readonly Dictionary<string, Icon> smallThemeIcons = new();
     private string? iconTheme;
     private readonly HashSet<string> tagShortcutKeys = new(StringComparer.Ordinal);
     private enum ServiceState { Missing, Ready, Conflict }
@@ -56,8 +57,16 @@ internal sealed class MainForm : Form
         Height = 920;
         MinimumSize = new Size(1040, 680);
         StartPosition = FormStartPosition.CenterScreen;
-        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        try { ConfigureApplicationIcon(File.ReadAllText(IconThemePath).Trim()); } catch (IOException) {}
+        // Set current embedded artwork before the first native window is shown.
+        // ExtractAssociatedIcon can return an older Explorer-cached icon.
+        HandleCreated += (_, _) => ApplyWindowIcons();
+        DpiChanged += (_, _) => ApplyWindowIcons();
+        var initialIconTheme = "light";
+        try {
+            var savedTheme = File.ReadAllText(IconThemePath).Trim();
+            if (savedTheme is "light" or "dark") initialIconTheme = savedTheme;
+        } catch (IOException) {}
+        ConfigureApplicationIcon(initialIconTheme);
         Controls.Add(webView);
 
         Shown += async (_, _) => await StartApplicationAsync();
@@ -164,23 +173,47 @@ internal sealed class MainForm : Form
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr icon);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr parameter, IntPtr value);
+
+    private static Icon CreateWindowIcon(Image source, int size)
+    {
+        using var bitmap = new Bitmap(size, size);
+        using (var graphics = Graphics.FromImage(bitmap)) {
+            graphics.Clear(Color.Transparent);
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            var margin = size * 10f / 256f;
+            graphics.DrawImage(source, new RectangleF(margin, margin, size - 2 * margin, size - 2 * margin));
+        }
+        var handle = bitmap.GetHicon();
+        try { return (Icon)Icon.FromHandle(handle).Clone(); } finally { DestroyIcon(handle); }
+    }
+
+    private void ApplyWindowIcons()
+    {
+        if (!IsHandleCreated || iconTheme is null || !themeIcons.TryGetValue(iconTheme, out var large) || !smallThemeIcons.TryGetValue(iconTheme, out var small)) return;
+        // Explicitly set both native icon slots. Keep the HICONs alive in the
+        // dictionaries until the form is destroyed, including across theme changes.
+        SendMessage(Handle, 0x0080, new IntPtr(1), large.Handle); // WM_SETICON / ICON_BIG
+        SendMessage(Handle, 0x0080, IntPtr.Zero, small.Handle); // WM_SETICON / ICON_SMALL
+    }
+
     private void ConfigureApplicationIcon(string? theme)
     {
         if (theme is not ("light" or "dark") || iconTheme == theme) return;
         try {
             if (!themeIcons.TryGetValue(theme, out var icon)) {
-                using var source = Image.FromFile(Path.Combine(projectDirectory, "desktop", "assets", theme == "dark" ? "PersonalTaskBoardDark.png" : "PersonalTaskBoard.png"));
-                using var bitmap = new Bitmap(256, 256);
-                using (var graphics = Graphics.FromImage(bitmap)) {
-                    graphics.Clear(Color.Transparent);
-                    graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                    graphics.DrawImage(source, new Rectangle(10, 10, 236, 236));
-                }
-                var handle = bitmap.GetHicon();
-                try { icon = (Icon)Icon.FromHandle(handle).Clone(); } finally { DestroyIcon(handle); }
+                var resource = theme == "dark" ? "PersonalJiraBoard.Icon.Dark.png" : "PersonalJiraBoard.Icon.Light.png";
+                using var stream = typeof(MainForm).Assembly.GetManifestResourceStream(resource)
+                    ?? throw new InvalidOperationException($"Missing embedded app icon: {resource}");
+                using var source = Image.FromStream(stream);
+                icon = CreateWindowIcon(source, 256);
                 themeIcons[theme] = icon;
+                smallThemeIcons[theme] = CreateWindowIcon(source, 32);
             }
-            Icon = icon; iconTheme = theme;
+            iconTheme = theme;
+            Icon = icon;
+            ApplyWindowIcons();
             Directory.CreateDirectory(Path.GetDirectoryName(IconThemePath)!);
             File.WriteAllText(IconThemePath, theme);
         } catch (Exception error) { WriteLog($"[windows] Theme icon unavailable: {error.Message}"); }
@@ -387,9 +420,15 @@ internal sealed class MainForm : Form
         httpClient.Dispose();
         foreach (var player in taskSounds.Values) { player.Stop(); player.Dispose(); }
         taskSounds.Clear();
+        if (IsHandleCreated) {
+            SendMessage(Handle, 0x0080, new IntPtr(1), IntPtr.Zero);
+            SendMessage(Handle, 0x0080, IntPtr.Zero, IntPtr.Zero);
+        }
         Icon = null;
         foreach (var icon in themeIcons.Values) icon.Dispose();
         themeIcons.Clear();
+        foreach (var icon in smallThemeIcons.Values) icon.Dispose();
+        smallThemeIcons.Clear();
         StopProcess(boardProcess);
         StopProcess(jiraProcess);
     }

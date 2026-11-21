@@ -28,6 +28,19 @@ if (-not (Test-Path (Join-Path $ProjectDirectory "node_modules\vinext\dist\cli.j
 }
 $OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$Runtime"
 
+# Windows cannot replace a running executable. Check before generating assets or
+# publishing; never stop the user's app or discard unsaved edits automatically.
+$OutputExecutable = Join-Path $OutputDirectory "PersonalTaskBoard.exe"
+if (Test-Path -LiteralPath $OutputExecutable) {
+    try {
+        $OutputProbe = [System.IO.File]::Open($OutputExecutable, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $OutputProbe.Dispose()
+    }
+    catch {
+        throw "Cannot replace '$OutputExecutable': it is in use or not writable. Finish your edits and close Personal Jira Board completely, then retry npm run windows:build. If it remains locked, check Task Manager for PersonalTaskBoard.exe and check folder write permissions."
+    }
+}
+
 # Use the same artwork as macOS, preserving its proportions on a transparent square.
 # PNG-compressed ICO avoids leaking a native HICON handle during repeated builds.
 Add-Type -AssemblyName System.Drawing

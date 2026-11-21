@@ -14,6 +14,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="../assets/PersonalTaskBoard.png" LogicalName="PersonalJiraBoard.Icon.Light.png" />
+    <EmbeddedResource Include="../assets/PersonalTaskBoardDark.png" LogicalName="PersonalJiraBoard.Icon.Dark.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- WebView2 is the supported Chromium-based Windows desktop web view. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
   </ItemGroup>

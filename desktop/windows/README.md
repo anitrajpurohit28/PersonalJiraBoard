@@ -137,3 +137,19 @@ The launcher is cross-compiled for Windows during development, and the shared ap
 Packaging does not require Jira credentials. For a local build it tries to save a valid configured token in private storage on this PC; a malformed or unwritable credentials file now produces a warning and the build continues. No API token is copied into the portable output. Release builds skip credential loading entirely.
 
 If Jira cannot connect afterwards, make `config/credentials.json` match `config/credentials.example.json` (a JSON object with an `apiToken` string), or enter the token in the app. UTF-8 JSON with a Windows byte-order mark is accepted. Keep credentials out of Git and chat.
+
+## Rebuilding while the app is open
+
+Finish your edits and close Personal Jira Board before running `npm run windows:build`. Windows locks a running `PersonalTaskBoard.exe`, so .NET cannot replace it. The build checks this before compilation and reports the locked output path. If closing the window does not release it, check Task Manager for `PersonalTaskBoard.exe`. The build does not stop running applications automatically. Reopen the app from the complete output folder after the build finishes.
+
+## Running window icon
+
+The launcher embeds the light and dark artwork directly in its executable and assigns both native window icon sizes. The running taskbar/title-bar icon follows the app theme without loading artwork from an older extracted runtime or Explorer's executable-icon cache. Rebuild and reopen the complete output folder to use a changed launcher. An already-running process cannot receive a newly compiled icon; close it before rebuilding. Pinned shortcuts and File Explorer continue to use the executable's default light icon.
+
+## Jira stays offline after entering a token
+
+Use the Jira account email and site shown in **Connect Jira** to confirm the app is pointing at the intended account. Failed connections keep this dialog open with the returned error; cached tasks remain available. A newly entered token takes priority over an in-flight startup attempt. Without **Remember this token**, it is retained only for reconnects during this session and cleared on disconnect or exit. With **Remember**, it is saved privately after authentication succeeds.
+
+If upgrading from an older build that silently closes the dialog, close the app completely, rebuild the latest source and reopen it. Authentication and project-access errors still require correcting the token, account or permissions; offline task access is not confirmation that Jira authentication succeeded.
+
+The connection indicator follows `/api/jira/session`, not Windows/browser internet-detection hints. An offline browser hint triggers a fresh service check. A task-cache or sync error is displayed separately and does not override a confirmed Jira connection.

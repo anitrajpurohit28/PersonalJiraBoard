@@ -8,6 +8,7 @@ export class JiraConnection {
   constructor({ loadToken = loadApiToken, saveToken = saveApiToken, createClient = (token) => new JiraApi(token), workspace = new JiraWorkspace(), autoSync = true } = {}) {
     this.loadToken = loadToken; this.saveToken = saveToken; this.createClient = createClient; this.workspace = workspace; this.autoSync = autoSync;
     this.client = null; this.bootChecked = false; this.hasCredential = false; this.credentialSource = null;
+    this.sessionCredential = null; this.connectionError = null;
     this.connecting = null; this.syncing = null; this.generation = 0; this.paused = false;
     this.phase = "disconnected"; this.message = "Connect Jira once to enable offline tasks and automatic sync.";
   }
@@ -16,7 +17,7 @@ export class JiraConnection {
     return {
       protocolVersion: helperProtocolVersion, configId: configurationId,
       connected: Boolean(this.client) && this.phase === "connected", availableOffline: this.workspace.available,
-      phase: this.phase, message: this.message, paused: this.paused, syncing: Boolean(this.syncing),
+      phase: this.phase, message: this.message, connectionError: this.connectionError, paused: this.paused, syncing: Boolean(this.syncing),
       account: profile?.identity.emailAddress || this.client?.identity?.emailAddress || null,
       accountId: profile?.identity.accountId || this.client?.identity?.accountId || null,
       accountDisplayName: profile?.identity.displayName || null,
@@ -42,13 +43,18 @@ export class JiraConnection {
     const timer = setTimeout(() => { void this.tick().catch(() => {}); }, 0); timer.unref?.();
   }
   async connect(payload = {}) {
-    if (this.connecting) return this.connecting;
+    if (this.connecting) {
+      if (!payload.apiToken) return this.connecting;
+      // Do not discard a newly pasted token in favour of a startup attempt.
+      await this.connecting.catch(() => {});
+    }
     this.bootChecked = true; this.paused = false;
     const generation = ++this.generation;
+    this.connectionError = null;
     this.phase = "connecting"; this.message = "Connecting to Jira…";
     this.connecting = (async () => {
       await this.workspace.load();
-      const saved = payload.apiToken ? { token: validateApiToken(payload.apiToken), source: "entered for this session" } : await this.loadToken();
+      const saved = payload.apiToken ? { token: validateApiToken(payload.apiToken), source: "entered for this session" } : this.sessionCredential || await this.loadToken();
       if (!saved) throw jiraError("Add your Jira API token to config/credentials.json or enter it in Connect Jira.", 401);
       const client = this.createClient(saved.token); await client.initialise();
       if (generation !== this.generation) throw jiraError("The Jira connection was cancelled.", 409);
@@ -56,11 +62,13 @@ export class JiraConnection {
       await this.workspace.run(() => this.workspace.prime(client));
       if (generation !== this.generation) throw jiraError("The Jira connection was cancelled.", 409);
       if (this.client) this.client.active = false;
+      if (payload.apiToken) this.sessionCredential = { ...saved };
       this.client = client; this.hasCredential = true; this.credentialSource = saved.source;
       this.phase = "connected"; this.message = "Jira connected. Changes sync automatically.";
       this.kick(); return this.publicStatus();
     })().catch((error) => {
       if (generation === this.generation) {
+        this.connectionError = error.message;
         this.phase = this.workspace.available ? "offline" : "error";
         this.message = error.status === 401 || error.status === 403 ? error.message : this.workspace.available ? "Offline. Changes are saved here and will sync when Jira is reachable." : error.message;
         if (error.status === 401 || /only accepts/.test(error.message)) { this.phase = "error"; this.paused = true; }
@@ -73,7 +81,8 @@ export class JiraConnection {
   disconnect() {
     this.generation++; this.paused = true; this.bootChecked = true;
     if (this.client) { this.client.active = false; this.client.authorization = ""; }
-    this.client = null; this.connecting = null;
+    this.client = null; this.connecting = null; this.sessionCredential = null; this.connectionError = null;
+    if (this.credentialSource === "entered for this session") { this.hasCredential = false; this.credentialSource = null; }
     this.phase = "paused"; this.message = "Sync paused. You can work offline; reconnect Jira to upload your saved changes.";
     return this.publicStatus();
   }
@@ -87,9 +96,10 @@ export class JiraConnection {
     }
     const client = this.client;
     this.syncing = this.workspace.synchronize(client).then(() => {
-      if (client === this.client) { this.phase = "connected"; this.message = "Jira connected. Changes sync automatically."; }
+      if (client === this.client) { this.connectionError = null; this.phase = "connected"; this.message = "Jira connected. Changes sync automatically."; }
     }).catch((error) => {
       if (client === this.client) {
+        this.connectionError = error.message;
         this.phase = "offline"; this.message = "Offline. Changes are saved here and will sync when Jira is reachable.";
         if (error.status === 401 || /only accepts/.test(error.message)) { this.paused = true; this.phase = "error"; this.message = error.message; }
       }

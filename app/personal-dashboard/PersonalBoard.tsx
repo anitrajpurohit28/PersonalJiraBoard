@@ -115,8 +115,10 @@ export default function PersonalBoard() {
       await refresh();
       seenRevision.current = result.queue?.revision ?? seenRevision.current;
       if (force) setMessage(result.connected ? "Syncing your saved changes with Jira…" : "Changes are saved on this device. Sync will resume when Jira is available.");
-    } catch {
-      setSession((current) => current ? { ...current, connected: false, phase: "unavailable", message: "Jira is not connected. Changes are saved on this device." } : current);
+    } catch (error) {
+      // A cache/database/field error is not proof that Jira authentication failed.
+      // The session endpoint remains authoritative for the connection indicator.
+      setError(error instanceof Error ? error.message : "Unable to sync tasks. Your changes remain saved on this device.");
     }
     finally { syncInFlight.current = false; setSyncing(false); }
   }, [refresh]);
@@ -127,23 +129,25 @@ export default function PersonalBoard() {
       try {
         const next = await requestJson("/api/jira/session");
         if (cancelled) return;
-        setSession(next.availableOffline && !navigator.onLine ? { ...next, connected: false, phase: "offline" } : next);
+        // WebView2/Windows connectivity hints can disagree with working Jira requests.
+        setSession(next);
         if (next.availableOffline && next.queue?.revision !== seenRevision.current) void sync();
-      } catch {
-        if (!cancelled) setSession((current) => ({ ...current, connected: false, phase: "unavailable", message: "Jira is not connected. Local tasks are available." }));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Unable to check the Jira service.";
+        if (!cancelled) setSession((current) => ({ ...current, connected: false, phase: "unavailable", connectionError: detail, message: detail }));
       }
     }
     void check();
     const timer = window.setInterval(check, 2500);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const recheck = () => { void check(); };
+    window.addEventListener("offline", recheck);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("offline", recheck); };
   }, [sync]);
 
   useEffect(() => {
     const online = () => { if (session?.availableOffline && !session.paused) void sync(true); };
-    const offline = () => setSession((current) => current ? { ...current, connected: false, phase: "offline", message: "Jira is not connected. Changes are saved on this device." } : current);
     window.addEventListener("online", online);
-    window.addEventListener("offline", offline);
-    return () => { window.removeEventListener("online", online); window.removeEventListener("offline", offline); };
+    return () => { window.removeEventListener("online", online); };
   }, [session?.availableOffline, session?.paused, sync]);
 
   useEffect(() => {
@@ -270,8 +274,8 @@ export default function PersonalBoard() {
 
   async function connect(token = "", remember = false) {
     setConnectingBusy(true);
-    try { setError(""); setSession(await requestJson("/api/jira/session", { method: "POST", body: JSON.stringify({ action: "connect", apiToken: token || undefined, remember }) })); setShowConnection(false); seenRevision.current = -1; void sync(true); }
-    catch (error) { setError(error instanceof Error ? error.message : "Unable to connect."); }
+    try { setError(""); const next = await requestJson("/api/jira/session", { method: "POST", body: JSON.stringify({ action: "connect", apiToken: token || undefined, remember }) }); setSession(next); if (!next.connected) throw new Error(next.connectionError || next.message || "Jira did not connect. Check your account, token and network, then try again."); setShowConnection(false); seenRevision.current = -1; void sync(true); }
+    catch (error) { setShowConnection(true); setError(error instanceof Error ? error.message : "Unable to connect."); }
     finally { setConnectingBusy(false); }
   }
 

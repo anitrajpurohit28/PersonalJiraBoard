@@ -299,8 +299,8 @@ export function JiraTaskEditor({ task, parentTask, tasks, session, busy, availab
 export function JiraConnection({ session, busy, error, onClose, onConnect }: { session: JiraSession | null; busy: boolean; error: string; onClose: () => void; onConnect: (token: string, remember: boolean) => Promise<void> }) {
   const [token, setToken] = useState("");
   const [remember, setRemember] = useState(false);
-  return <TaskModal title="Connect Jira" busy={busy} onClose={onClose}><p>{settings.email}</p><p>Use a Jira API token to connect from any browser. No extension is required.</p><p><a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noreferrer">Create a Jira API token ↗</a></p><form onSubmit={(event) => { event.preventDefault(); void onConnect(token, remember); }}>
-    {error ? <p className="notice error" role="alert">{error}</p> : null}
+  return <TaskModal title="Connect Jira" busy={busy} onClose={onClose}><p>{settings.email}</p><p>Jira site: {new URL(settings.jiraUrl).hostname}</p><p>Use a Jira API token to connect from any browser. No extension is required.</p><p><a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noreferrer">Create a Jira API token ↗</a></p><form onSubmit={(event) => { event.preventDefault(); void onConnect(token, remember); }}>
+    {error || session?.connectionError ? <p className="notice error" role="alert">{error || session?.connectionError}</p> : null}
     {session?.hasCredential ? <p>A token is available from {session.credentialSource}. Leave this field blank to use it.</p> : <p>You can also prefill <code>config/credentials.json</code> before starting the app.</p>}
     <label>Jira API token<input type="password" autoComplete="off" value={token} required={!session?.hasCredential} disabled={busy} onChange={(event) => setToken(event.target.value)} /></label>
     {token ? <label className="checkbox-label"><input type="checkbox" checked={remember} disabled={busy} onChange={(event) => setRemember(event.target.checked)} /> Remember this token on this device</label> : null}
