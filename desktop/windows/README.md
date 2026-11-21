@@ -131,3 +131,9 @@ Connecting to the same Jira board on Windows retrieves synced tasks, subtasks, d
 ## Verification
 
 The launcher is cross-compiled for Windows during development, and the shared app and keyboard bridge are checked separately. A native Windows/WebView2 execution check is still required on a Windows PC; compiling on macOS does not verify that window, native downloads, or Windows notification delivery.
+
+## Credentials warning while building
+
+Packaging does not require Jira credentials. For a local build it tries to save a valid configured token in private storage on this PC; a malformed or unwritable credentials file now produces a warning and the build continues. No API token is copied into the portable output. Release builds skip credential loading entirely.
+
+If Jira cannot connect afterwards, make `config/credentials.json` match `config/credentials.example.json` (a JSON object with an `apiToken` string), or enter the token in the app. UTF-8 JSON with a Windows byte-order mark is accepted. Keep credentials out of Git and chat.

@@ -14,13 +14,18 @@ export function validateApiToken(value) {
   if (typeof value !== "string" || !value.trim() || /[\s\r\n]/.test(value.trim()) || value.length > 10000) throw jiraError("Enter a valid Jira API token.");
   return value.trim();
 }
+export function parseCredentialToken(text, file = "the private credentials file") {
+  let parsed;
+  // Windows PowerShell 5.1 can write UTF-8 JSON with a leading BOM.
+  try { parsed = JSON.parse(text.replace(/^\uFEFF/, "")); }
+  catch { throw jiraError(`Jira credentials in ${file} must contain valid JSON. Use the format in config/credentials.example.json.`); }
+  if (!parsed?.apiToken) return null;
+  return validateApiToken(parsed.apiToken);
+}
 async function readToken(file) {
   let text;
   try { text = await readFile(file, "utf8"); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
-  let parsed;
-  try { parsed = JSON.parse(text); } catch { throw jiraError("The private Jira credentials file must contain valid JSON."); }
-  if (!parsed?.apiToken) return null;
-  return validateApiToken(parsed.apiToken);
+  return parseCredentialToken(text, file);
 }
 export async function loadApiToken() {
   if (process.env.JIRA_API_TOKEN) return { token: validateApiToken(process.env.JIRA_API_TOKEN), source: "environment" };

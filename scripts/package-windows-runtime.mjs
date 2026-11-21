@@ -3,11 +3,11 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localSettings, configurationId, storageNamespace, appProtocolVersion, helperProtocolVersion } from '../config/settings.mjs';
-import { loadApiToken, saveApiToken } from '../local/jira-credentials.mjs';
+import { prepareLocalCredentials } from '../local/packaging-credentials.mjs';
 import build from '../config/build-info.json' with { type: 'json' };
 const root = fileURLToPath(new URL('../', import.meta.url)), target = path.resolve(process.argv[2]), app = path.join(target, 'app');
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Package on Windows with x64 Node.');
-if (process.env.PJB_RELEASE_BUILD !== '1') { const credential = await loadApiToken(); if (credential) await saveApiToken(credential.token); }
+await prepareLocalCredentials();
 await rm(app, { recursive: true, force: true }); await mkdir(app, { recursive: true });
 for (const directory of ['app','config','db','lib','local','public','scripts','worker','node_modules']) await cp(path.join(root,directory), path.join(app,directory), { recursive:true, dereference:true, filter: file => !['credentials.json','.DS_Store','.cache','.vite'].includes(path.basename(file)) });
 await mkdir(path.join(app,'desktop')); for (const file of ['update-agent.mjs','update-install.mjs']) await cp(path.join(root,'desktop',file), path.join(app,'desktop',file));
