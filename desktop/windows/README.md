@@ -14,7 +14,7 @@ Use **Windows 10 (22H2) or Windows 11** and install:
 - [.NET SDK (8 or later)](https://dotnet.microsoft.com/download), needed to build the desktop launcher.
 - [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/), if it is not already installed.
 
-Windows uses Node SQLite directly, so it does not start the Windows 11-only workerd runtime. Existing cached SQLite databases are reused; fresh installations store the cache in `data/<configuration>/native/tasks.sqlite`. Keep all data directories when upgrading. Windows 10 and Windows 11 native execution still need verification on a Windows PC; shared runtime tests on macOS do not substitute for that check.
+Windows uses Node SQLite directly, so it does not start the Windows 11-only workerd runtime. Existing Miniflare task databases are reused. The auxiliary `metadata.sqlite` file stays in place. Fresh installations store the cache in `data/<configuration>/native/tasks.sqlite`. Keep all data directories when upgrading. Windows 10 and Windows 11 native execution still need verification on a Windows PC; shared runtime tests on macOS do not substitute for that check.
 
 Copy or clone the **latest source** to a writable folder, for example `C:\Tools\Anit_personal_JiraBoard`. Do not copy the Mac's `node_modules`, `outputs`, `dist`, `.vite`, `.vinext`, or `.wrangler` folders: dependencies and executables must be installed/built on Windows.
 

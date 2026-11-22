@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { openNodeD1, databasePath } from '../local/node-d1.mjs';
 import { runUpdateCommand, extractUpdateArchive } from '../local/update-process.mjs';
@@ -28,7 +29,44 @@ test('Node SQLite retains D1 query semantics, rolls back failed batches and reop
   db.close();db=openNodeD1(file);assert.equal((await db.prepare('SELECT * FROM tasks').all()).results.length,1);
  } finally {db.close();rmSync(directory,{recursive:true,force:true});}
 });
-test('Windows reuses the existing Miniflare SQLite database and rejects ambiguous data directories',()=>{
- const directory=mkdtempSync(path.join(tmpdir(),'pjb-db-path-'));
- try {const legacy=path.join(directory,'v3/d1/miniflare-D1DatabaseObject');mkdirSync(legacy,{recursive:true});const file=path.join(legacy,'existing.sqlite');writeFileSync(file,'');assert.equal(databasePath(directory),file);writeFileSync(path.join(legacy,'other.sqlite'),'');assert.throws(()=>databasePath(directory),/Multiple/);} finally {rmSync(directory,{recursive:true,force:true});}
+test('Windows ignores Miniflare bookkeeping and reuses the existing task database', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pjb-db-path-'));
+  const legacy = path.join(directory, 'v3/d1/miniflare-D1DatabaseObject');
+  const metadata = path.join(legacy, 'metadata.sqlite');
+  const file = path.join(legacy, 'existing.sqlite');
+  try {
+    mkdirSync(legacy, { recursive: true });
+    const bookkeeping = new DatabaseSync(metadata);
+    try { bookkeeping.exec('CREATE TABLE _cf_ALARM (id INTEGER PRIMARY KEY)'); }
+    finally { bookkeeping.close(); }
+    const original = readFileSync(metadata);
+    const native = path.join(directory, 'native', 'tasks.sqlite');
+    assert.equal(databasePath(directory), native);
+
+    const saved = openNodeD1(file);
+    try { await saved.prepare("CREATE TABLE tasks AS SELECT 'Saved task' AS title").run(); }
+    finally { saved.close(); }
+    assert.equal(databasePath(directory), file);
+    const reopened = openNodeD1(databasePath(directory));
+    try { assert.equal((await reopened.prepare('SELECT title FROM tasks').first()).title, 'Saved task'); }
+    finally { reopened.close(); }
+    assert.deepEqual(readFileSync(metadata), original);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Windows still refuses to choose between multiple task databases', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pjb-db-conflict-'));
+  const legacy = path.join(directory, 'v3/d1/miniflare-D1DatabaseObject');
+  const native = path.join(directory, 'native', 'tasks.sqlite');
+  try {
+    mkdirSync(legacy, { recursive: true });
+    mkdirSync(path.dirname(native));
+    writeFileSync(path.join(legacy, 'first.sqlite'), '');
+    writeFileSync(path.join(legacy, 'second.sqlite'), '');
+    assert.throws(() => databasePath(directory), /Multiple local task databases/);
+
+    rmSync(path.join(legacy, 'second.sqlite'));
+    writeFileSync(native, '');
+    assert.throws(() => databasePath(directory), /Multiple local task databases/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

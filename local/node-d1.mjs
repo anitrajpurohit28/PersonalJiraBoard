@@ -5,7 +5,12 @@ import path from 'node:path';
 export function databasePath(directory) {
   const native = path.join(directory, 'native', 'tasks.sqlite');
   const legacy = path.join(directory, 'v3', 'd1', 'miniflare-D1DatabaseObject');
-  const files = existsSync(legacy) ? readdirSync(legacy).filter(name => name.endsWith('.sqlite')).map(name => path.join(legacy, name)) : [];
+  // Miniflare stores Durable Object bookkeeping separately from the D1 database.
+  const files = existsSync(legacy)
+    ? readdirSync(legacy)
+      .filter(name => name.toLowerCase().endsWith('.sqlite') && name.toLowerCase() !== 'metadata.sqlite')
+      .map(name => path.join(legacy, name))
+    : [];
   if (existsSync(native) && files.length || files.length > 1) throw new Error('Multiple local task databases found. Keep a backup and resolve the data path before starting.');
   return files[0] || native;
 }
