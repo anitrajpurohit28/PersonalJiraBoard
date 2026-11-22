@@ -37,10 +37,10 @@ internal sealed class MainForm : Form
     private Process? jiraProcess;
     private bool closing;
 
-    public MainForm(string logFile)
+    public MainForm(string logFile, bool configureAccount)
     {
         this.logFile = logFile;
-        projectDirectory = FindProjectDirectory();
+        projectDirectory = FindProjectDirectory(configureAccount);
         if (!File.Exists(Path.Combine(projectDirectory, "node_modules", "vinext", "dist", "cli.js")))
             throw new InvalidOperationException("Dependencies are missing. Open a terminal in the project folder and run npm.cmd ci first.");
         using var runtime = ReadRuntimeSettings(projectDirectory);
@@ -170,23 +170,15 @@ internal sealed class MainForm : Form
 
     private static string IconThemePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PersonalJiraBoard", "icon-theme.txt");
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr icon);
-
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto)]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr parameter, IntPtr value);
 
-    private static Icon CreateWindowIcon(Image source, int size)
+    private static Icon LoadWindowIcon(string theme, Size size)
     {
-        using var bitmap = new Bitmap(size, size);
-        using (var graphics = Graphics.FromImage(bitmap)) {
-            graphics.Clear(Color.Transparent);
-            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            var margin = size * 10f / 256f;
-            graphics.DrawImage(source, new RectangleF(margin, margin, size - 2 * margin, size - 2 * margin));
-        }
-        var handle = bitmap.GetHicon();
-        try { return (Icon)Icon.FromHandle(handle).Clone(); } finally { DestroyIcon(handle); }
+        var resource = theme == "dark" ? "PersonalJiraBoard.Icon.Dark.ico" : "PersonalJiraBoard.Icon.Light.ico";
+        using var stream = typeof(MainForm).Assembly.GetManifestResourceStream(resource)
+            ?? throw new InvalidOperationException($"Missing embedded app icon: {resource}");
+        return new Icon(stream, size);
     }
 
     private void ApplyWindowIcons()
@@ -203,13 +195,9 @@ internal sealed class MainForm : Form
         if (theme is not ("light" or "dark") || iconTheme == theme) return;
         try {
             if (!themeIcons.TryGetValue(theme, out var icon)) {
-                var resource = theme == "dark" ? "PersonalJiraBoard.Icon.Dark.png" : "PersonalJiraBoard.Icon.Light.png";
-                using var stream = typeof(MainForm).Assembly.GetManifestResourceStream(resource)
-                    ?? throw new InvalidOperationException($"Missing embedded app icon: {resource}");
-                using var source = Image.FromStream(stream);
-                icon = CreateWindowIcon(source, 256);
+                icon = LoadWindowIcon(theme, SystemInformation.IconSize);
+                smallThemeIcons[theme] = LoadWindowIcon(theme, SystemInformation.SmallIconSize);
                 themeIcons[theme] = icon;
-                smallThemeIcons[theme] = CreateWindowIcon(source, 32);
             }
             iconTheme = theme;
             Icon = icon;
@@ -516,19 +504,24 @@ internal sealed class MainForm : Form
         return Path.Combine(fallback, "app.log");
     }
 
-    private static string PreparePortableProject(string bundled)
+    private static string PreparePortableProject(string bundled, bool configureAccount)
     {
         var support = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PersonalJiraBoard");
         Directory.CreateDirectory(support);
         var account = Path.Combine(support, "account.json");
-        using var build = JsonDocument.Parse(File.ReadAllText(Path.Combine(bundled, "config", "build-info.json")));
-        var bundledAccount = Path.Combine(bundled, "config", "app.json");
-        using var settings = JsonDocument.Parse(File.ReadAllText(bundledAccount));
-        if ((!File.Exists(account) || build.RootElement.GetProperty("development").GetBoolean()) && settings.RootElement.GetProperty("email").GetString() != "user@example.com") File.Copy(bundledAccount, account, true);
-        if (!File.Exists(account))
+        // The bundled account can seed a new installation. A saved account is authoritative.
+        if (!configureAccount && !File.Exists(account))
         {
+            var bundledAccount = Path.Combine(bundled, "config", "app.json");
+            using var settings = JsonDocument.Parse(File.ReadAllText(bundledAccount));
+            if (settings.RootElement.GetProperty("email").GetString() != "user@example.com")
+                File.Copy(bundledAccount, account, overwrite: false);
+        }
+        if (configureAccount || !File.Exists(account))
+        {
+            using var setupIcon = LoadWindowIcon("light", SystemInformation.SmallIconSize);
             using var form = new Form {
-                Text = "Connect your Jira board", ClientSize = new Size(540, 268),
+                Text = "Connect your Jira board", Icon = setupIcon, ClientSize = new Size(540, 268),
                 StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false, MinimizeBox = false,
             };
@@ -551,17 +544,73 @@ internal sealed class MainForm : Form
             var button = new Button { Text = "Continue", Left = 410, Top = 230, Width = 110, DialogResult = DialogResult.OK };
             form.Controls.AddRange(new Control[] { instructions, emailLabel, email, urlLabel, url, example, hint, button });
             form.AcceptButton = button;
-            if (form.ShowDialog() != DialogResult.OK) throw new OperationCanceledException("Jira setup was cancelled.");
-            File.WriteAllText(account, JsonSerializer.Serialize(new { email = email.Text, jiraUrl = url.Text }));
+            if (File.Exists(account))
+            {
+                try {
+                    using var previous = JsonDocument.Parse(File.ReadAllText(account));
+                    if (previous.RootElement.ValueKind == JsonValueKind.Object)
+                    {
+                        if (previous.RootElement.TryGetProperty("email", out var savedEmail) && savedEmail.ValueKind == JsonValueKind.String)
+                            email.Text = savedEmail.GetString();
+                        if (previous.RootElement.TryGetProperty("jiraUrl", out var savedUrl) && savedUrl.ValueKind == JsonValueKind.String)
+                            url.Text = savedUrl.GetString();
+                    }
+                }
+                catch (JsonException) { }
+            }
+            while (true)
+            {
+                if (form.ShowDialog() != DialogResult.OK) throw new OperationCanceledException("Jira setup was cancelled.");
+                var input = JsonSerializer.Serialize(new { email = email.Text, jiraUrl = url.Text });
+                if (TrySaveAccount(bundled, account, input)) break;
+                MessageBox.Show("Enter your Jira login email and the full HTTPS URL from your Jira board.", "Check your Jira details",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
         var buildId = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "BuildID.txt")).Trim();
         return PortableRuntimeCache.Prepare(bundled, Path.Combine(support, "runtime", "apps"), buildId, account);
     }
 
-    private static string FindProjectDirectory()
+    private static bool TrySaveAccount(string bundled, string account, string input)
+    {
+        var start = new ProcessStartInfo(nodeExecutable) {
+            WorkingDirectory = bundled, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("--input-type=module");
+        start.ArgumentList.Add("-e");
+        start.ArgumentList.Add("""
+            import { readFileSync } from 'node:fs';
+            import { validateSettings } from './lib/app-config.mjs';
+            console.log(JSON.stringify(validateSettings(JSON.parse(readFileSync(0, 'utf8')))));
+            """);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Node.js could not start.");
+        process.StandardInput.Write(input);
+        process.StandardInput.Close();
+        var output = process.StandardOutput.ReadToEndAsync();
+        var errors = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(10000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("The Jira account could not be checked in time. Try setup again.");
+        }
+        errors.GetAwaiter().GetResult();
+        if (process.ExitCode != 0) return false;
+        var temporary = $"{account}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temporary, output.GetAwaiter().GetResult());
+            File.Move(temporary, account, overwrite: true);
+        }
+        finally { File.Delete(temporary); }
+        return true;
+    }
+
+    private static string FindProjectDirectory(bool configureAccount)
     {
         var bundled = Path.Combine(AppContext.BaseDirectory, "app");
-        if (IsProjectDirectory(bundled) && File.Exists(Path.Combine(AppContext.BaseDirectory, "BuildID.txt"))) return PreparePortableProject(bundled);
+        if (IsProjectDirectory(bundled) && File.Exists(Path.Combine(AppContext.BaseDirectory, "BuildID.txt"))) return PreparePortableProject(bundled, configureAccount);
+        if (configureAccount) throw new InvalidOperationException("Build the full Windows app before running account setup.");
         var configured = Environment.GetEnvironmentVariable(
             "PERSONAL_TASK_BOARD_PROJECT_DIR");
         if (IsProjectDirectory(configured)) return Path.GetFullPath(configured!);

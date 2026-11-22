@@ -6,12 +6,13 @@ namespace PersonalTaskBoard.Windows;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
         var logFile = MainForm.CreateLogPath();
         MainForm.AppendLog(logFile, "[windows] Starting Personal Jira Board.");
-        try { Application.Run(new MainForm(logFile)); }
+        try { Application.Run(new MainForm(logFile, Array.Exists(args, argument => argument == "--setup"))); }
+        catch (OperationCanceledException) { }
         catch (Exception error)
         {
             MainForm.AppendLog(logFile, $"[windows] Startup failed: {error.Message}");

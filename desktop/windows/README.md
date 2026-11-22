@@ -34,7 +34,7 @@ The architecture should be `x64`. Using `npm.cmd` works in PowerShell even when 
 
 On first launch, enter your Jira login email and full board URL, then paste your API token in **Connect Jira**. Choose **Remember this token on this device** to save it. The Windows build works from a fresh checkout without either private configuration file.
 
-To preconfigure the account before building, copy `config/app.example.json` to `config/app.json` and enter your own details:
+For a private preconfigured build, use `npm run windows:build -- -UseLocalAccount`. Copy `config/app.example.json` to `config/app.json` and enter your own details:
 
 ```json
 {
@@ -62,6 +62,8 @@ Replace the example value with your Jira API token:
 
 Keep this file private. No Google login window, Chrome extension, AI token, or open Jira browser tab is needed.
 
+To correct or change the account on a PC, close the app and use `npm run windows:start -- --setup` or pass `--setup` to the portable EXE. First-launch setup and this command save the selected email and board in `%LOCALAPPDATA%\PersonalJiraBoard\account.json`. That file controls the desktop app. The checkout’s `config/app.json` controls browser runs and can seed private builds. If you change accounts, connect with a token for the new account.
+
 ## Build and run the desktop app
 
 From the repository root:
@@ -79,7 +81,7 @@ outputs\windows\win-x64\PersonalTaskBoard.exe
 
 For subsequent launches, double-click that executable or use `npm.cmd run windows:start`. You can create a desktop shortcut to it. `npm.cmd run windows` builds and opens it in one command.
 
-Keep the entire output folder together: the executable, `app/`, `runtime/`, Runtime.json and BuildID.txt. It can be moved outside the repository and includes Node, application dependencies and .NET. The existing `PERSONAL_TASK_BOARD_PROJECT_DIR` developer fallback is supported for older executable-only builds. A source build uses your prefilled email and board URL when supplied. API tokens are stored separately from the portable app. Enter/save the API token in the app when first connecting on another PC.
+Keep the entire output folder together: the executable, `app/`, `runtime/`, Runtime.json and BuildID.txt. It can be moved outside the repository and includes Node, application dependencies and .NET. The existing `PERSONAL_TASK_BOARD_PROJECT_DIR` developer fallback is supported for older executable-only builds. Normal builds contain example account settings. A private build using `-UseLocalAccount` uses the bundled account only to seed a new installation. API tokens are stored separately from the portable app. Enter/save the API token in the app when first connecting on another PC.
 
 The app starts the dashboard at `http://localhost:3120/` and the Jira helper at `http://127.0.0.1:4327`, without console windows. It checks the configuration and protocol of services already using those ports. Close an older/different board app if a port-conflict message appears. Closing the window stops only the services this launcher started.
 
@@ -154,7 +156,7 @@ Finish your edits and close Personal Jira Board before running `npm run windows:
 
 ## Running window icon
 
-The launcher embeds the light and dark artwork directly in its executable and assigns both native window icon sizes. The running taskbar/title-bar icon follows the app theme without loading artwork from an older extracted runtime or Explorer's executable-icon cache. Rebuild and reopen the complete output folder to use a changed launcher. An already-running process cannot receive a newly compiled icon; close it before rebuilding. Pinned shortcuts and File Explorer continue to use the executable's default light icon.
+The launcher embeds the same artwork as macOS as multi-size Windows icon resources. File Explorer uses the light icon, and the window uses the matching light or dark icon. The running taskbar/title-bar icon follows the app theme without loading artwork from an older extracted runtime or Explorer's executable-icon cache. Rebuild and reopen the complete output folder to use a changed launcher. An already-running process cannot receive a newly compiled icon; close it before rebuilding. For an older pinned shortcut, unpin it and pin the new executable. To refresh the tracked Windows icon files after changing the artwork on Mac, run `zsh desktop/build-app-icon.sh` and then `python3 desktop/create-windows-icons.py` from the repository root. The generator uses Pillow. Windows builds use the tracked icons directly.
 
 ## Jira stays offline after entering a token
 

@@ -7,15 +7,15 @@
     <Nullable>enable</Nullable>
     <AssemblyName>PersonalTaskBoard</AssemblyName>
     <RootNamespace>PersonalTaskBoard.Windows</RootNamespace>
-    <ApplicationIcon>PersonalTaskBoard.ico</ApplicationIcon>
+    <ApplicationIcon>icons/AppIconLight.ico</ApplicationIcon>
     <Version>1.1.0</Version>
     <Product>Personal Jira Board</Product>
     <Description>PersonalTaskBoard native Windows launcher</Description>
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="../assets/PersonalTaskBoard.png" LogicalName="PersonalJiraBoard.Icon.Light.png" />
-    <EmbeddedResource Include="../assets/PersonalTaskBoardDark.png" LogicalName="PersonalJiraBoard.Icon.Dark.png" />
+    <EmbeddedResource Include="icons/AppIconLight.ico" LogicalName="PersonalJiraBoard.Icon.Light.ico" />
+    <EmbeddedResource Include="icons/AppIconDark.ico" LogicalName="PersonalJiraBoard.Icon.Dark.ico" />
   </ItemGroup>
 
   <ItemGroup>
