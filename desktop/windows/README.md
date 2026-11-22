@@ -114,6 +114,12 @@ Use **Update → Download update → Restart & update**. The app downloads the m
 
 To rebuild manually from changed source, quit the app, run `npm.cmd ci`, `npm.cmd run windows:build`, then `npm.cmd run windows:start`. Neither method replaces the separate data folders below.
 
+## Recover from an older runtime cache error
+
+If an older launcher reports that the runtime cache already exists, close Personal Jira Board and open `%LOCALAPPDATA%\PersonalJiraBoard\runtime\apps` in File Explorer. Rename the entry named in the error by adding `-old`, then reopen the executable. The app regenerates the runtime cache and uses the stored Jira account.
+
+After rebuilding with the cache fix, the launcher serializes cache setup and handles incomplete entries automatically.
+
 ## Data and recovery
 
 | Location | Contents |

@@ -64,11 +64,20 @@ private func loadRuntimeSettings() -> RuntimeSettings {
         if !FileManager.default.fileExists(atPath: accountURL.path) {
             NSApp.setActivationPolicy(.regular)
             let alert = NSAlert(); alert.messageText = "Connect your Jira board"
-            alert.informativeText = "Enter your Jira login email and HTTPS board URL. Your API token will be requested in the app."
-            let view = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 85))
-            let email = NSTextField(frame: NSRect(x: 0, y: 48, width: 420, height: 26)); email.placeholderString = "Jira login email"
-            let url = NSTextField(frame: NSRect(x: 0, y: 8, width: 420, height: 26)); url.placeholderString = "https://your-site.atlassian.net/jira/…/boards/2"
-            view.addSubview(email); view.addSubview(url); alert.accessoryView = view
+            alert.informativeText = "In Jira, open the board in your project. Copy the full URL from your browser’s address bar. You’ll enter your API token in the app."
+            let width: CGFloat = 500
+            let view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 125))
+            let email = NSTextField(frame: NSRect(x: 0, y: 88, width: width, height: 26))
+            email.placeholderString = "Jira login email"
+            let url = NSTextField(frame: NSRect(x: 0, y: 49, width: width, height: 26))
+            url.placeholderString = "Paste the full Jira board URL"
+            let example = NSTextField(labelWithString: "https://<user-name>.atlassian.net/jira/software/projects/KAN/boards/2")
+            example.frame = NSRect(x: 0, y: 25, width: width, height: 19)
+            let hint = NSTextField(labelWithString: "Example format. Replace <user-name> with your Atlassian site name.")
+            hint.frame = NSRect(x: 0, y: 5, width: width, height: 19)
+            hint.textColor = .secondaryLabelColor
+            for field in [email, url, example, hint] { view.addSubview(field) }
+            alert.accessoryView = view
             alert.addButton(withTitle: "Continue"); alert.addButton(withTitle: "Quit")
             guard alert.runModal() == .alertFirstButtonReturn else { exit(0) }
             let data = try JSONSerialization.data(withJSONObject: ["email": email.stringValue, "jiraUrl": url.stringValue])

@@ -527,36 +527,35 @@ internal sealed class MainForm : Form
         if ((!File.Exists(account) || build.RootElement.GetProperty("development").GetBoolean()) && settings.RootElement.GetProperty("email").GetString() != "user@example.com") File.Copy(bundledAccount, account, true);
         if (!File.Exists(account))
         {
-            using var form = new Form { Text = "Connect your Jira board", Width = 510, Height = 240, StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
-            var email = new TextBox { Left = 20, Top = 40, Width = 450, PlaceholderText = "Jira login email" };
-            var url = new TextBox { Left = 20, Top = 95, Width = 450, PlaceholderText = "https://your-site.atlassian.net/jira/…/boards/2" };
-            var button = new Button { Text = "Continue", Left = 360, Top = 145, Width = 110, DialogResult = DialogResult.OK };
-            form.Controls.AddRange(new Control[] { new Label { Text = "Jira login email", Left = 20, Top = 15, Width = 450 }, email, new Label { Text = "Jira board URL", Left = 20, Top = 70, Width = 450 }, url, button }); form.AcceptButton = button;
+            using var form = new Form {
+                Text = "Connect your Jira board", ClientSize = new Size(540, 268),
+                StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false, MinimizeBox = false,
+            };
+            var instructions = new Label {
+                Left = 20, Top = 16, Width = 500, Height = 36,
+                Text = "In Jira, open the board in your project. Copy the full URL from your browser’s address bar.",
+            };
+            var emailLabel = new Label { Text = "Jira login email", Left = 20, Top = 60, Width = 500 };
+            var email = new TextBox { Left = 20, Top = 84, Width = 500, PlaceholderText = "Jira login email" };
+            var urlLabel = new Label { Text = "Jira board URL", Left = 20, Top = 119, Width = 500 };
+            var url = new TextBox { Left = 20, Top = 143, Width = 500, PlaceholderText = "Paste the full Jira board URL" };
+            var example = new Label {
+                Left = 20, Top = 175, Width = 500,
+                Text = "https://<user-name>.atlassian.net/jira/software/projects/KAN/boards/2",
+            };
+            var hint = new Label {
+                Left = 20, Top = 197, Width = 500,
+                Text = "Example format. Replace <user-name> with your Atlassian site name.",
+            };
+            var button = new Button { Text = "Continue", Left = 410, Top = 230, Width = 110, DialogResult = DialogResult.OK };
+            form.Controls.AddRange(new Control[] { instructions, emailLabel, email, urlLabel, url, example, hint, button });
+            form.AcceptButton = button;
             if (form.ShowDialog() != DialogResult.OK) throw new OperationCanceledException("Jira setup was cancelled.");
             File.WriteAllText(account, JsonSerializer.Serialize(new { email = email.Text, jiraUrl = url.Text }));
         }
         var buildId = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "BuildID.txt")).Trim();
-        if (buildId.Length == 0 || buildId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-' && c != '.' && c != '_')) throw new InvalidOperationException("Invalid application build identifier.");
-        var destination = Path.Combine(support, "runtime", "apps", buildId);
-        if (!File.Exists(Path.Combine(destination, ".complete")))
-        {
-            var staging = destination + ".installing-" + Environment.ProcessId;
-            if (Directory.Exists(staging)) Directory.Delete(staging, true);
-            CopyDirectory(bundled, staging);
-            File.WriteAllText(Path.Combine(staging, ".complete"), buildId);
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            if (Directory.Exists(destination)) Directory.Delete(destination, true);
-            Directory.Move(staging, destination);
-        }
-        var target = Path.Combine(destination, "config", "app.json");
-        if (!File.Exists(target) || !File.ReadAllBytes(account).SequenceEqual(File.ReadAllBytes(target))) File.Copy(account, target, true);
-        return destination;
-    }
-    private static void CopyDirectory(string source, string destination)
-    {
-        Directory.CreateDirectory(destination);
-        foreach (var file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
-        foreach (var directory in Directory.GetDirectories(source)) CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        return PortableRuntimeCache.Prepare(bundled, Path.Combine(support, "runtime", "apps"), buildId, account);
     }
 
     private static string FindProjectDirectory()
