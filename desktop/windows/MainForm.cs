@@ -37,8 +37,9 @@ internal sealed class MainForm : Form
     private Process? jiraProcess;
     private bool closing;
 
-    public MainForm()
+    public MainForm(string logFile)
     {
+        this.logFile = logFile;
         projectDirectory = FindProjectDirectory();
         if (!File.Exists(Path.Combine(projectDirectory, "node_modules", "vinext", "dist", "cli.js")))
             throw new InvalidOperationException("Dependencies are missing. Open a terminal in the project folder and run npm.cmd ci first.");
@@ -50,7 +51,6 @@ internal sealed class MainForm : Form
         BoardUri = new Uri($"http://localhost:{DesktopBoardPort}/");
         BoardHealthUri = new Uri($"http://localhost:{DesktopBoardPort}/api/app-status");
         JiraHealthUri = new Uri($"http://{runtime.RootElement.GetProperty("helperHost").GetString()}:{runtime.RootElement.GetProperty("helperPort").GetInt32()}/api/jira/status");
-        logFile = CreateLogPath();
 
         Text = "Personal Jira Board";
         Width = 1500;
@@ -243,6 +243,7 @@ internal sealed class MainForm : Form
                     try {
                         var start = new ProcessStartInfo(Path.Combine(directory, "node.exe")) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = directory };
                         start.ArgumentList.Add(Path.Combine(directory, "update-agent.mjs")); start.ArgumentList.Add(Path.Combine(directory, "job.json"));
+                        start.Environment["PJB_LOG_DIR"] = Path.GetDirectoryName(logFile);
                         Process.Start(start); Close();
                     } catch (Exception error) {
                         WriteLog($"[windows] Installer could not start: {error.Message}");
@@ -417,6 +418,7 @@ internal sealed class MainForm : Form
     private void StopOwnedServices()
     {
         closing = true;
+        WriteLog("[windows] Closing Personal Jira Board.");
         httpClient.Dispose();
         foreach (var player in taskSounds.Values) { player.Stop(); player.Dispose(); }
         taskSounds.Clear();
@@ -480,20 +482,38 @@ internal sealed class MainForm : Form
     private void WriteLog(string? line)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
-        lock (logLock)
-        {
-            File.AppendAllText(logFile,
-                $"{DateTimeOffset.Now:O} {line}{Environment.NewLine}");
-        }
+        lock (logLock) AppendLog(logFile, line);
     }
 
-    private static string CreateLogPath()
+    internal static void AppendLog(string file, string line)
     {
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "PersonalTaskBoard", "Logs");
-        Directory.CreateDirectory(directory);
-        return Path.Combine(directory, "app.log");
+        try { File.AppendAllText(file, $"{DateTimeOffset.Now:O} {line}{Environment.NewLine}"); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    internal static string CreateLogPath()
+    {
+        var fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PersonalJiraBoard", "logs");
+        try {
+            using var runtime = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Runtime.json")));
+            if (runtime.RootElement.TryGetProperty("logsDirectory", out var property) && property.ValueKind == JsonValueKind.String &&
+                property.GetString() is string directory && Path.IsPathFullyQualified(directory) &&
+                File.Exists(Path.Combine(directory, ".gitignore"))) {
+                var file = Path.Combine(directory, "app.log");
+                using var stream = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.Read);
+                return file;
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (JsonException) { }
+
+        try { Directory.CreateDirectory(fallback); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return Path.Combine(fallback, "app.log");
     }
 
     private static string PreparePortableProject(string bundled)

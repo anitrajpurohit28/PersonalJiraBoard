@@ -9,9 +9,12 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
-        try { Application.Run(new MainForm()); }
+        var logFile = MainForm.CreateLogPath();
+        MainForm.AppendLog(logFile, "[windows] Starting Personal Jira Board.");
+        try { Application.Run(new MainForm(logFile)); }
         catch (Exception error)
         {
+            MainForm.AppendLog(logFile, $"[windows] Startup failed: {error.Message}");
             MessageBox.Show(error.Message, "Personal Jira Board could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

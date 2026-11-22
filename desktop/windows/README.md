@@ -4,14 +4,14 @@ The Windows desktop app runs the same dashboard, database routes, and Jira conne
 
 ## Install a published release
 
-Download the Windows ZIP for your PC from [GitHub Releases](https://github.com/anitrajpurohit28/PersonalJiraBoard/releases), extract the whole folder to a writable location, and open **PersonalTaskBoard.exe**. Node and .NET are bundled; Microsoft Edge WebView2 is required. Setup asks for your email and Jira board URL on a fresh PC, then the app accepts your Jira API token. Use **Update** for future versions. The workflow must first be committed/pushed and complete its first release before downloads exist.
+Download the Windows ZIP for your PC from [GitHub Releases](https://github.com/anitrajpurohit28/PersonalJiraBoard/releases), extract the whole folder to a writable location, and open **PersonalTaskBoard.exe**. Node and .NET are bundled; Microsoft Edge WebView2 is required. Setup asks for your email and Jira board URL on a fresh PC, then the app accepts your Jira API token. Use **Update** for future versions.
 
 ## Build from source
 
 Use **Windows 10 (22H2) or Windows 11** and install:
 
 - [Node.js](https://nodejs.org/en/download), **Windows x64**, version 22.16 or newer (24 LTS is a suitable choice). Node includes npm. Use x64 Node for the packaged runtime; on a Windows ARM PC, use the x64 Node installer and x64 app through Windows emulation.
-- [.NET 8 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/8.0), needed to build the desktop launcher.
+- [.NET SDK (8 or later)](https://dotnet.microsoft.com/download), needed to build the desktop launcher.
 - [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/), if it is not already installed.
 
 Windows uses Node SQLite directly, so it does not start the Windows 11-only workerd runtime. Existing cached SQLite databases are reused; fresh installations store the cache in `data/<configuration>/native/tasks.sqlite`. Keep all data directories when upgrading. Windows 10 and Windows 11 native execution still need verification on a Windows PC; shared runtime tests on macOS do not substitute for that check.
@@ -32,7 +32,9 @@ The architecture should be `x64`. Using `npm.cmd` works in PowerShell even when 
 
 ## Configure the Jira account
 
-Before starting, edit `config/app.json`:
+On first launch, enter your Jira login email and full board URL, then paste your API token in **Connect Jira**. Choose **Remember this token on this device** to save it. The Windows build works from a fresh checkout without either private configuration file.
+
+To preconfigure the account before building, copy `config/app.example.json` to `config/app.json` and enter your own details:
 
 ```json
 {
@@ -77,7 +79,7 @@ outputs\windows\win-x64\PersonalTaskBoard.exe
 
 For subsequent launches, double-click that executable or use `npm.cmd run windows:start`. You can create a desktop shortcut to it. `npm.cmd run windows` builds and opens it in one command.
 
-Keep the entire output folder together: the executable, `app/`, `runtime/`, Runtime.json and BuildID.txt. It can be moved outside the repository and includes Node, application dependencies and .NET. The existing `PERSONAL_TASK_BOARD_PROJECT_DIR` developer fallback is supported for older executable-only builds. A source build reads your configured email/board URL; API tokens are excluded from the distributable. Enter/save the API token in the app when first connecting on another PC.
+Keep the entire output folder together: the executable, `app/`, `runtime/`, Runtime.json and BuildID.txt. It can be moved outside the repository and includes Node, application dependencies and .NET. The existing `PERSONAL_TASK_BOARD_PROJECT_DIR` developer fallback is supported for older executable-only builds. A source build uses your prefilled email and board URL when supplied. API tokens are stored separately from the portable app. Enter/save the API token in the app when first connecting on another PC.
 
 The app starts the dashboard at `http://localhost:3120/` and the Jira helper at `http://127.0.0.1:4327`, without console windows. It checks the configuration and protocol of services already using those ports. Close an older/different board app if a port-conflict message appears. Closing the window stops only the services this launcher started.
 
@@ -122,9 +124,9 @@ To rebuild manually from changed source, quit the app, run `npm.cmd ci`, `npm.cm
 | `%LOCALAPPDATA%\PersonalTaskBoard\private\personal-<configuration-id>\credentials.json` | Token, if saved through Connect Jira |
 | `%LOCALAPPDATA%\PersonalJiraBoard\account.json` | Email and Jira board URL retained across app updates |
 | `%LOCALAPPDATA%\PersonalJiraBoard\WebView2\` | Desktop browser profile and display preferences |
-| `%LOCALAPPDATA%\PersonalTaskBoard\Logs\app.log` | Startup diagnostics |
+| `%LOCALAPPDATA%\PersonalJiraBoard\logs\app.log` | Startup and local service diagnostics for downloaded builds |
 
-These paths are outside the repository. `config/credentials.json`, database files, and generated output are already Git-ignored.
+Local desktop builds write diagnostics to the checkout’s `logs/app.log` when available. See the [logging paths](../../README.md#logs). The paths above are outside the repository. `config/credentials.json`, database files, and generated output are already Git-ignored.
 
 Connecting to the same Jira board on Windows retrieves synced tasks, subtasks, descriptions, priorities, workflow, comments, attachments, labels and Area assignments. Reminders, manual ordering, tag shortcuts/order, display preferences, and unsynced Mac edits do not transfer through Jira. Each computer maintains its own offline queue. Sync the Mac first before relying on the Windows copy.
 
@@ -133,6 +135,8 @@ Connecting to the same Jira board on Windows retrieves synced tasks, subtasks, d
 The launcher is cross-compiled for Windows during development, and the shared app and keyboard bridge are checked separately. A native Windows/WebView2 execution check is still required on a Windows PC; compiling on macOS does not verify that window, native downloads, or Windows notification delivery.
 
 ## Credentials warning while building
+
+If an older build reports `ERR_MODULE_NOT_FOUND` for `config/app.json`, update your checkout to get the first-launch setup fix. With that fix, a missing file is expected on a fresh checkout.
 
 Packaging does not require Jira credentials. For a local build it tries to save a valid configured token in private storage on this PC; a malformed or unwritable credentials file now produces a warning and the build continues. No API token is copied into the portable output. Release builds skip credential loading entirely.
 

@@ -12,7 +12,7 @@ $IconSource = Join-Path $ProjectDirectory "desktop\assets\PersonalTaskBoard.png"
 $IconOutput = Join-Path $PSScriptRoot "PersonalTaskBoard.ico"
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    throw "The .NET 8 SDK is required to build the Windows app. Install it from https://dotnet.microsoft.com/download/dotnet/8.0"
+    throw "Install the .NET SDK (8 or later) to build the Windows app: https://dotnet.microsoft.com/download"
 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     throw "Node.js 22.16 or newer is required to run Personal Jira Board."

@@ -27,7 +27,7 @@ The backups live under `PersonalJiraBoard/backups/update-<version>-<job-id>/` in
 
 The app reopens after the swap and the agent checks its version and account health. The previous application is removed after successful startup. If startup fails and no new app or service remains running, the previous application is restored. If the new app is still running, the previous copy is retained for manual recovery instead of replacing running files. The pre-update data backup is retained in either case; database backups are not automatically restored over potentially newer edits.
 
-Updater diagnostics and results: `PersonalJiraBoard/updates/jobs/<job-id>/install.log` and `result.json`. The Update dialog also reports an unsuccessful previous update. Retained previous files are `.previous-<job-id>` inside the Mac app, or `<Windows app folder>.previous-<job-id>`. Quit the app and all its services before manual recovery. Logs identify the backup location on successful installation.
+The updater writes to `updates.log` in the app’s [log directory](../README.md#logs). If that location is unavailable, it uses `PersonalJiraBoard/updates/jobs/<job-id>/install.log`. The job’s `result.json` stays in the job directory. The Update dialog also reports an unsuccessful previous update. Retained previous files are `.previous-<job-id>` inside the Mac app, or `<Windows app folder>.previous-<job-id>`. Quit the app and all its services before manual recovery. Logs identify the backup location on successful installation.
 
 ## Windows portable installation
 

@@ -1,11 +1,22 @@
-import { readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { swapApplication, backupUserData } from './update-install.mjs';
 const jobFile = process.argv[2], directory = path.dirname(jobFile);
 const job = JSON.parse(await readFile(jobFile, 'utf8'));
 const saveResult = async value => { const body = JSON.stringify(value); await writeFile(path.join(directory, 'result.json'), body, {mode:0o600}); await writeFile(path.join(directory, '../../last-result.json'), body, {mode:0o600}); };
-const log = message => writeFile(path.join(directory, 'install.log'), `${new Date().toISOString()} ${message}\n`, { flag: 'a', mode: 0o600 });
+async function log(message) {
+  const line = `${new Date().toISOString()} [update ${job.id}] ${message}\n`;
+  const logs = process.env.PJB_LOG_DIR;
+  if (logs && path.isAbsolute(logs)) {
+    try {
+      await mkdir(logs, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(logs, 'updates.log'), line, { flag: 'a', mode: 0o600 });
+      return;
+    } catch { /* Fall back to the private job directory. */ }
+  }
+  await writeFile(path.join(directory, 'install.log'), line, { flag: 'a', mode: 0o600 }).catch(() => {});
+}
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 let launchedPid;
 function launch() {
@@ -25,6 +36,7 @@ function nativeRunning() {
 let swap;
 try {
   if (path.basename(directory) !== job.id || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(job.id) || !Number.isInteger(job.parentPid) || job.parentPid < 1 || !path.isAbsolute(job.target)) throw new Error('Invalid update job.');
+  await log(`Installing version ${job.version}.`);
   await waitForExit();
   // Do not copy SQLite files while another instance is writing to them.
   for (let attempt = 0; attempt < 30; attempt++) {

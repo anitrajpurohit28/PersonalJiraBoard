@@ -2,14 +2,16 @@
 
 A small local dashboard for your Jira tasks. Create tasks and subtasks, add comments, attach files, link issues, and select multiple tasks to mark Done or delete. Tasks are assigned to you automatically. New parent tasks default to Medium priority; new subtasks inherit their parent’s priority and labels, which you can override. No AI service or browser extension is required.
 
+[Install on Mac](#install-on-this-mac) · [Install on Windows](#install-on-windows)
+
 ## Configuration
 
-**Before using the app from this repository, create and populate both `config/app.json` and `config/credentials.json` with your own details.**
+**For browser mode or a preconfigured desktop build, use `config/app.json` for your Jira email and board URL and `config/credentials.json` for your token.** The Windows desktop build and published ZIPs also let you enter these details in the app on first launch.
 
 1. Copy [config/app.example.json](config/app.example.json) to `config/app.json`. Set your Jira login email and the full URL of the Jira board you want to use.
 2. Copy [config/credentials.example.json](config/credentials.example.json) to `config/credentials.json`. Set your Jira API token.
 
-Replace the example placeholders before running or building the app. Do not use the `.example.json` files directly as your configuration.
+If you use these files, replace the example placeholders with your own details. You can also enter the token in **Connect Jira**.
 
 Example `config/app.json`:
 
@@ -105,11 +107,26 @@ The installer writes `/Applications/Personal Jira Board.app` and copies the conf
 
 After changing the email or Jira URL, quit the installed app and run `npm run desktop` again. To build without installing, use `npm run desktop:build`. On another Mac, prefill the configuration and credentials before building, or enter the token through **Connect Jira**.
 
-## Browser and Windows
+## Install on Windows
 
-For browser development, run `npm run dev` and open [localhost:3100](http://localhost:3100). `npm start` builds and runs the production version.
+**Download the portable app.** On Windows 10 (22H2) or Windows 11, download the Windows ZIP for your PC from [GitHub Releases](https://github.com/anitrajpurohit28/PersonalJiraBoard/releases). Use the `win32-x64` ZIP for an Intel or AMD PC. Extract the entire ZIP to a folder you can write to, then double-click **PersonalTaskBoard.exe**. The app bundles Node.js and .NET. Install [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) if it is missing.
 
-Windows uses the same dashboard and Jira connector. On Windows 10 (22H2) or Windows 11 with x64 Node.js 22.16+, .NET 8 SDK and WebView2, run `npm.cmd ci`, configure the email/board URL and private API token, then `npm.cmd run windows:build` and `npm.cmd run windows:start`. Subsequent launches can use `outputs\windows\win-x64\PersonalTaskBoard.exe` in the complete portable output folder, which includes Node and app files. See [Windows setup](desktop/windows/README.md) for the full instructions, offline storage, upgrades and browser mode. Install dependencies afresh on Windows; do not copy Mac `node_modules`.
+**Build from source.** Install [Windows x64 Node.js 22.16 or later](https://nodejs.org/en/download), the [.NET SDK (8 or later)](https://dotnet.microsoft.com/download), and WebView2. From the repository root in Git Bash, run:
+
+```bash
+npm ci
+npm run windows
+```
+
+`npm run windows` builds and opens the app. To build without opening it, use `npm run windows:build`. For later launches, double-click `outputs/windows/win-x64/PersonalTaskBoard.exe` or run `npm run windows:start`. Keep the entire output folder together when moving it.
+
+On first launch, enter your Jira login email and full board URL, then paste your API token in **Connect Jira**. Select **Remember this token on this device** to reuse it next time. You can also prefill the two files in [Configuration](#configuration) before building. A fresh checkout can build with no `config/app.json`; the packaged app prompts for your account.
+
+Close the app before rebuilding its existing output. If Windows still holds that EXE open, run `npm run windows:build -- -BuildName fresh` and launch `outputs/windows/win-x64-fresh/PersonalTaskBoard.exe` after the old app exits. See the [Windows guide](desktop/windows/README.md) for PowerShell commands, updates and local data.
+
+## Run in a browser
+
+Populate the files in [Configuration](#configuration), run `npm run dev` and open [localhost:3100](http://localhost:3100). `npm start` builds and runs the production version.
 
 ## App updates
 
@@ -130,7 +147,15 @@ Updates preserve account settings, credentials, local tasks and queued offline c
 - Priority sorting uses High → Medium → Low, oldest-created first within each priority, regardless of due dates and reminders. The same sorting applies in Active, Done, Reminders and Overdue. Days sorting keeps overdue tasks and fired reminders first, then oldest tasks. Drag cards or subtasks to save a manual order on this device; both sort buttons turn off. Click Priority or Days to resume automatic sorting.
 - Set reminders directly in task details. A fired reminder colors the whole task red, including nested subtasks, until you clear the reminder or choose another time. Marking a task Done clears its reminder, including bulk completion and changes synced from Jira. Reopening it does not restore the old reminder. Restarting and ordinary edits leave active reminders intact. Reminders remain listed after firing. Previously saved private notes and updates are preserved. Reminders stay on this device and are preserved during Jira sync. Offline files and queued changes belong to this installation; they do not transfer automatically between computers.
 
-Existing data stays under `~/Library/Application Support/PersonalTaskBoard/data/<configuration>`. The offline workspace, cached files, private credentials and creation receipts live under `PersonalTaskBoard/private/<configuration>`. The macOS app's generated runtime is separate, under `PersonalJiraBoard/runtime`; diagnostics are at `~/Library/Logs/PersonalJiraBoard/app.log`.
+Existing data stays under `~/Library/Application Support/PersonalTaskBoard/data/<configuration>`. The offline workspace, cached files, private credentials and creation receipts live under `PersonalTaskBoard/private/<configuration>`. The macOS app's generated runtime is separate, under `PersonalJiraBoard/runtime`.
+
+## Logs
+
+Browser runs from the checkout write to `logs/browser.log` and show the same messages in the terminal. Desktop apps built from the checkout write to `logs/app.log`. Their updater writes to `logs/updates.log`. Each file appends diagnostics across runs.
+
+Downloaded desktop releases use a per-user folder. On macOS it is `~/Library/Application Support/PersonalJiraBoard/logs/`. On Windows it is `%LOCALAPPDATA%\PersonalJiraBoard\logs\`. Local builds also use that folder if the checkout’s `logs/` is unavailable.
+
+Git tracks only `logs/.gitignore`. Generated logs stay on your device.
 
 ## Code map
 

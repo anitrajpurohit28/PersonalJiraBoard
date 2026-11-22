@@ -32,7 +32,9 @@ date -u +%Y%m%dT%H%M%SZ > "$RESOURCES_DIR/BuildID.txt"
 # The native shell reads the same runtime settings as the web app.
 node --input-type=module > "$RESOURCES_DIR/Runtime.json" <<'NODE'
 import { localSettings, configurationId, storageNamespace, appProtocolVersion, helperProtocolVersion } from './config/settings.mjs';
-console.log(JSON.stringify({ ...localSettings, configurationId, storageNamespace, appProtocolVersion, helperProtocolVersion }));
+import path from 'node:path';
+const logsDirectory = process.env.PJB_RELEASE_BUILD === '1' ? undefined : path.resolve('logs');
+console.log(JSON.stringify({ ...localSettings, configurationId, storageNamespace, appProtocolVersion, helperProtocolVersion, logsDirectory }));
 NODE
 
 # Copy runtime inputs only. Credentials, databases, caches and tests stay out.

@@ -3,8 +3,7 @@ import Foundation
 import WebKit
 
 // The distributable app contains both the web application and a portable Node
-// runtime under Contents/Resources. Nothing here points at a developer's clone,
-// so the .app can be moved to /Applications on any compatible Mac.
+// runtime under Contents/Resources, so the .app can be moved to /Applications.
 private let resourcesDirectory = Bundle.main.resourceURL!
 private struct RuntimeSettings: Decodable {
     let desktopPort: Int
@@ -20,6 +19,36 @@ private let nodeExecutable = resourcesDirectory.appendingPathComponent("runtime/
 private let applicationSupportDirectory = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Application Support/PersonalJiraBoard", isDirectory: true)
 private let accountURL = applicationSupportDirectory.appendingPathComponent("account.json")
+// Local builds use the checkout while its tracked logs folder is available.
+private let desktopLog: (directory: URL, handle: FileHandle?) = {
+    let manager = FileManager.default
+    let fallback = applicationSupportDirectory.appendingPathComponent("logs", isDirectory: true)
+    let manifest = resourcesDirectory.appendingPathComponent("Runtime.json")
+    var candidates = [fallback]
+    if let data = try? Data(contentsOf: manifest),
+       let runtime = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+       let directory = runtime["logsDirectory"] as? String, directory.hasPrefix("/") {
+        let candidate = URL(fileURLWithPath: directory, isDirectory: true)
+        if manager.fileExists(atPath: candidate.appendingPathComponent(".gitignore").path) {
+            candidates.insert(candidate, at: 0)
+        }
+    }
+    for directory in candidates {
+        try? manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = directory.appendingPathComponent("app.log")
+        let descriptor = open(file.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+        if descriptor >= 0 {
+            return (directory, FileHandle(fileDescriptor: descriptor, closeOnDealloc: true))
+        }
+    }
+    return (fallback, nil)
+}()
+
+private func logDesktop(_ message: String) {
+    let line = "\(ISO8601DateFormatter().string(from: Date())) [desktop] \(message)\n"
+    try? desktopLog.handle?.write(contentsOf: Data(line.utf8))
+}
+
 // Account settings are outside the signed application, so a generic release cannot replace them.
 private func loadRuntimeSettings() -> RuntimeSettings {
     do {
@@ -54,6 +83,7 @@ private func loadRuntimeSettings() -> RuntimeSettings {
         guard process.terminationStatus == 0 else { throw NSError(domain: "Jira account", code: 1, userInfo: [NSLocalizedDescriptionKey: "Check your email and Jira URL in \(accountURL.path)"]) }
         return try JSONDecoder().decode(RuntimeSettings.self, from: data)
     } catch {
+        logDesktop("Cannot load Jira settings: \(error.localizedDescription)")
         let alert = NSAlert(); alert.messageText = "Cannot load Jira settings"; alert.informativeText = error.localizedDescription; alert.runModal(); exit(1)
     }
 }
@@ -131,7 +161,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // window if Node, npm, or another local service has a real problem.
     private var startupAttempts = 0
     private var taskSounds: [String: NSSound] = [:]
-    private var logHandle: FileHandle?
     private var serviceMonitorTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -140,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
         configureMenu()
-        configureLog()
+        logDesktop("Starting Personal Jira Board.")
         configureWindow()
         showStartingPage()
         ensureLocalServices()
@@ -176,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         stopOwnedProcess(boardProcess)
         stopOwnedProcess(jiraHelperProcess)
         serviceMonitorTimer?.invalidate()
-        try? logHandle?.close()
+        logDesktop("Closing Personal Jira Board.")
     }
 
     private func configureMenu() {
@@ -249,23 +278,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSWorkspace.shared.open(boardURL)
     }
 
-    private func configureLog() {
-        // A GUI application has no terminal window, so child-process output is
-        // retained in a normal macOS log location for troubleshooting.
-        let logsDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/PersonalJiraBoard", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: logsDirectory,
-            withIntermediateDirectories: true
-        )
-        let logURL = logsDirectory.appendingPathComponent("app.log")
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-        logHandle = try? FileHandle(forWritingTo: logURL)
-        _ = try? logHandle?.seekToEnd()
-    }
-
     private func configureWindow() {
         // JavaScript is needed for the React board. New external windows are
         // handled below so Jira links open in the user's normal browser.
@@ -310,6 +322,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             do {
                 let agent = Process(); agent.executableURL = directory.appendingPathComponent("node")
                 agent.arguments = [directory.appendingPathComponent("update-agent.mjs").path, directory.appendingPathComponent("job.json").path]
+                var environment = ProcessInfo.processInfo.environment
+                environment["PJB_LOG_DIR"] = desktopLog.directory.path
+                agent.environment = environment
                 agent.standardOutput = FileHandle.nullDevice; agent.standardError = FileHandle.nullDevice
                 try agent.run(); NSApp.terminate(nil)
             } catch {
@@ -473,7 +488,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                     self.startupAttempts += 1
                     if self.startupAttempts >= 90 {
                         self.showStartingPage(
-                            message: "The local board could not start. See ~/Library/Logs/PersonalJiraBoard/app.log."
+                            message: "The local board could not start. See \(desktopLog.directory.appendingPathComponent("app.log").path)."
                         )
                         return
                     }
@@ -559,7 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         } catch {
             let line = "\n[desktop] Could not install bundled board: \(error)\n"
             if let data = line.data(using: .utf8) {
-                try? logHandle?.write(contentsOf: data)
+                try? desktopLog.handle?.write(contentsOf: data)
             }
             return false
         }
@@ -638,8 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         environment["PJB_UPDATE_PLATFORM"] = "darwin-x64"
         #endif
         environment["WRANGLER_WRITE_LOGS"] = "false"
-        environment["WRANGLER_LOG_PATH"] = runtimeStateDirectory
-            .appendingPathComponent("wrangler.log").path
+        environment["WRANGLER_LOG_PATH"] = desktopLog.directory.appendingPathComponent("wrangler.log").path
         environment["MINIFLARE_REGISTRY_PATH"] = runtimeStateDirectory
             .appendingPathComponent("registry").path
         environment["XDG_CACHE_HOME"] = runtimeStateDirectory
@@ -652,26 +666,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
-            try? self?.logHandle?.write(contentsOf: data)
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
+            try? desktopLog.handle?.write(contentsOf: data)
         }
-        process.terminationHandler = { [weak self] process in
-            let line = "\n[desktop] Local process exited with status \(process.terminationStatus).\n"
-            if let data = line.data(using: .utf8) {
-                try? self?.logHandle?.write(contentsOf: data)
-            }
+        process.terminationHandler = { process in
+            logDesktop("Local process exited with status \(process.terminationStatus).")
         }
 
         do {
             try process.run()
             return process
         } catch {
-            let line = "\n[desktop] Could not start \(arguments.joined(separator: " ")): \(error)\n"
-            if let data = line.data(using: .utf8) {
-                try? logHandle?.write(contentsOf: data)
-            }
+            logDesktop("Could not start \(arguments.joined(separator: " ")): \(error.localizedDescription)")
             return nil
         }
     }
