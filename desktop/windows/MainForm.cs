@@ -59,7 +59,12 @@ internal sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         // Set current embedded artwork before the first native window is shown.
         // ExtractAssociatedIcon can return an older Explorer-cached icon.
-        HandleCreated += (_, _) => ApplyWindowIcons();
+        HandleCreated += (_, _) =>
+        {
+            ApplyWindowIcons();
+            try { TaskbarIdentity.Apply(Handle, Text); }
+            catch (Exception error) { WriteLog($"[windows] Taskbar icon registration failed: {error.Message}"); }
+        };
         DpiChanged += (_, _) => ApplyWindowIcons();
         var initialIconTheme = "light";
         try {
@@ -188,6 +193,16 @@ internal sealed class MainForm : Form
         // dictionaries until the form is destroyed, including across theme changes.
         SendMessage(Handle, 0x0080, new IntPtr(1), large.Handle); // WM_SETICON / ICON_BIG
         SendMessage(Handle, 0x0080, IntPtr.Zero, small.Handle); // WM_SETICON / ICON_SMALL
+    }
+
+    protected override void DestroyHandle()
+    {
+        if (IsHandleCreated)
+        {
+            try { TaskbarIdentity.Clear(Handle); }
+            catch (Exception error) { WriteLog($"[windows] Taskbar icon cleanup failed: {error.Message}"); }
+        }
+        base.DestroyHandle();
     }
 
     private void ConfigureApplicationIcon(string? theme)

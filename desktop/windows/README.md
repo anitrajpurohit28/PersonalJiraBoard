@@ -156,7 +156,9 @@ Finish your edits and close Personal Jira Board before running `npm run windows:
 
 ## Running window icon
 
-The launcher embeds the same artwork as macOS as multi-size Windows icon resources. File Explorer uses the light icon, and the window uses the matching light or dark icon. The running taskbar/title-bar icon follows the app theme without loading artwork from an older extracted runtime or Explorer's executable-icon cache. Rebuild and reopen the complete output folder to use a changed launcher. An already-running process cannot receive a newly compiled icon; close it before rebuilding. For an older pinned shortcut, unpin it, open the new executable, and pin that running app. A shortcut to a different copy can still open the old version. To refresh the tracked Windows icon files after changing the artwork on Mac, run `zsh desktop/build-app-icon.sh` and then `python3 desktop/create-windows-icons.py` from the repository root. The generator uses Pillow. Windows builds use the tracked icons directly.
+The launcher embeds the same artwork as macOS as multi-size Windows icon resources. File Explorer uses the light icon, the title bar follows the app theme, and the taskbar shortcut uses the light icon as its default. The launcher registers its taskbar icon explicitly and keeps a copy in `%LOCALAPPDATA%\PersonalJiraBoard\icons` so a pinned shortcut can find it after an update. Quit before rebuilding and relaunch from the complete output folder. If a previous pin still shows a blank or old icon, unpin it and pin the new running app.
+
+To refresh the tracked Windows icon files after changing the artwork on Mac, run `zsh desktop/build-app-icon.sh` and then `python3 desktop/create-windows-icons.py` from the repository root. The generator uses Pillow. Windows builds use the tracked icons directly.
 
 ## Jira stays offline after entering a token
 
