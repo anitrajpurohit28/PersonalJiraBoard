@@ -118,13 +118,13 @@ npm ci
 npm run windows
 ```
 
-`npm run windows` builds and opens the app. To build without opening it, use `npm run windows:build`. For later launches, double-click `outputs/windows/win-x64/PersonalTaskBoard.exe` or run `npm run windows:start`. Keep the entire output folder together when moving it.
+`npm run windows` builds and opens the app. To build without opening it, use `npm run windows:build`. For later launches, run `npm run windows:start`. It opens `outputs/windows/win-x64/PersonalTaskBoard.exe` and prints the full executable path. Keep the entire output folder together when moving it.
 
 On first launch, enter your Jira login email and full board URL, then paste your API token in **Connect Jira**. Select **Remember this token on this device** to reuse it next time. Windows builds open setup on a fresh PC even when the builder has a local `config/app.json`. To prefill a new installation for your own use, run `npm run windows:build -- -UseLocalAccount` with the files in [Configuration](#configuration). A saved Windows account takes precedence over the bundled settings.
 
 To change the saved Windows account, close the app and run `npm run windows:start -- --setup` from the repository. You can also run `PersonalTaskBoard.exe --setup` from the portable folder. The app keeps the previous account’s local data separately.
 
-Close the app before rebuilding its existing output. If Windows still holds that EXE open, run `npm run windows:build -- -BuildName fresh` and launch `outputs/windows/win-x64-fresh/PersonalTaskBoard.exe` after the old app exits. See the [Windows guide](desktop/windows/README.md) for PowerShell commands, updates and local data.
+Close the app before rebuilding so Windows can replace the executable in the standard output folder. See the [Windows guide](desktop/windows/README.md) for PowerShell commands, updates and local data.
 
 ## Run in a browser
 

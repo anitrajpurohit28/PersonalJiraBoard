@@ -79,7 +79,7 @@ The build creates:
 outputs\windows\win-x64\PersonalTaskBoard.exe
 ```
 
-For subsequent launches, double-click that executable or use `npm.cmd run windows:start`. You can create a desktop shortcut to it. `npm.cmd run windows` builds and opens it in one command.
+For subsequent launches, use `npm.cmd run windows:start` or double-click the executable above. The command opens the standard folder for the selected architecture and prints the full executable path. You can create a desktop shortcut to it. `npm.cmd run windows` builds and opens it in one command.
 
 Keep the entire output folder together: the executable, `app/`, `runtime/`, Runtime.json and BuildID.txt. It can be moved outside the repository and includes Node, application dependencies and .NET. The existing `PERSONAL_TASK_BOARD_PROJECT_DIR` developer fallback is supported for older executable-only builds. Normal builds contain example account settings. A private build using `-UseLocalAccount` uses the bundled account only to seed a new installation. API tokens are stored separately from the portable app. Enter/save the API token in the app when first connecting on another PC.
 
@@ -156,7 +156,7 @@ Finish your edits and close Personal Jira Board before running `npm run windows:
 
 ## Running window icon
 
-The launcher embeds the same artwork as macOS as multi-size Windows icon resources. File Explorer uses the light icon, and the window uses the matching light or dark icon. The running taskbar/title-bar icon follows the app theme without loading artwork from an older extracted runtime or Explorer's executable-icon cache. Rebuild and reopen the complete output folder to use a changed launcher. An already-running process cannot receive a newly compiled icon; close it before rebuilding. For an older pinned shortcut, unpin it and pin the new executable. To refresh the tracked Windows icon files after changing the artwork on Mac, run `zsh desktop/build-app-icon.sh` and then `python3 desktop/create-windows-icons.py` from the repository root. The generator uses Pillow. Windows builds use the tracked icons directly.
+The launcher embeds the same artwork as macOS as multi-size Windows icon resources. File Explorer uses the light icon, and the window uses the matching light or dark icon. The running taskbar/title-bar icon follows the app theme without loading artwork from an older extracted runtime or Explorer's executable-icon cache. Rebuild and reopen the complete output folder to use a changed launcher. An already-running process cannot receive a newly compiled icon; close it before rebuilding. For an older pinned shortcut, unpin it, open the new executable, and pin that running app. A shortcut to a different copy can still open the old version. To refresh the tracked Windows icon files after changing the artwork on Mac, run `zsh desktop/build-app-icon.sh` and then `python3 desktop/create-windows-icons.py` from the repository root. The generator uses Pillow. Windows builds use the tracked icons directly.
 
 ## Jira stays offline after entering a token
 
@@ -165,13 +165,3 @@ Use the Jira account email and site shown in **Connect Jira** to confirm the app
 If upgrading from an older build that silently closes the dialog, close the app completely, rebuild the latest source and reopen it. Authentication and project-access errors still require correcting the token, account or permissions; offline task access is not confirmation that Jira authentication succeeded.
 
 The connection indicator follows `/api/jira/session`, not Windows/browser internet-detection hints. An offline browser hint triggers a fresh service check. A task-cache or sync error is displayed separately and does not override a confirmed Jira connection.
-
-## Build a fresh copy when an older output is locked
-
-To compile into a separate folder without replacing the existing EXE, run this in Git Bash from the repository root:
-
-```bash
-npm run windows:build -- -BuildName fresh
-```
-
-This creates the complete portable app at `outputs/windows/win-x64-fresh/`. Choose another name if that folder is already in use. Finish edits and quit the old app before launching the new `outputs/windows/win-x64-fresh/PersonalTaskBoard.exe`, so both instances do not compete for the same local services. Keep the whole portable folder together. The option does not move, delete or reset user data. Release builds retain their standard output paths and reject named folders.

@@ -10,7 +10,7 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
         var logFile = MainForm.CreateLogPath();
-        MainForm.AppendLog(logFile, "[windows] Starting Personal Jira Board.");
+        MainForm.AppendLog(logFile, $"[windows] Starting Personal Jira Board {typeof(Program).Assembly.GetName().Version} from {Environment.ProcessPath}.");
         try { Application.Run(new MainForm(logFile, Array.Exists(args, argument => argument == "--setup"))); }
         catch (OperationCanceledException) { }
         catch (Exception error)

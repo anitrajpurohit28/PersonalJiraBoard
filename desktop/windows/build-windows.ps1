@@ -1,8 +1,6 @@
 param(
     [ValidateSet("win-x64", "win-arm64")]
     [string]$Runtime,
-    [ValidatePattern("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
-    [string]$BuildName,
     [switch]$UseLocalAccount
 )
 
@@ -27,16 +25,10 @@ if ($Runtime -notin @("win-x64", "win-arm64")) { throw "Only x64 and ARM64 Windo
 if (-not (Test-Path (Join-Path $ProjectDirectory "node_modules\vinext\dist\cli.js"))) {
     throw "Dependencies are missing. Run npm.cmd ci in the project folder before building the Windows app."
 }
-# Named local builds leave the existing portable app untouched. Release builds
-# retain the standard architecture-specific path expected by release packaging.
 if ($UseLocalAccount -and $env:PJB_RELEASE_BUILD -eq "1") {
     throw "Release builds must use the neutral account configuration."
 }
-if ($BuildName -and $env:PJB_RELEASE_BUILD -eq "1") {
-    throw "Named output folders are for local builds only. Release builds use the standard output folder."
-}
-$OutputFolder = if ($BuildName) { "$Runtime-$BuildName" } else { $Runtime }
-$OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$OutputFolder"
+$OutputDirectory = Join-Path $ProjectDirectory "outputs\windows\$Runtime"
 
 # Windows cannot replace a running executable. Check before publishing; never stop the user's app or discard unsaved edits automatically.
 $OutputExecutable = Join-Path $OutputDirectory "PersonalTaskBoard.exe"
@@ -47,7 +39,7 @@ if (Test-Path -LiteralPath $OutputExecutable) {
     }
     catch {
         $LockReason = $_.Exception.GetBaseException().Message
-        throw "Cannot replace '$OutputExecutable'. Windows reported: $LockReason Finish your edits and close the app, or build into a separate folder with: npm run windows:build -- -BuildName fresh. If 'fresh' is already in use, choose another name. No running process was stopped."
+        throw "Cannot replace '$OutputExecutable'. Windows reported: $LockReason Close Personal Jira Board completely and rerun npm run windows:build."
     }
 }
 
@@ -69,6 +61,8 @@ if (-not (Test-Path (Join-Path $OutputDirectory "PersonalTaskBoard.exe"))) { thr
 
 Push-Location $ProjectDirectory
 try {
+    & node scripts/verify-windows-launcher.mjs $OutputExecutable
+    if ($LASTEXITCODE -ne 0) { throw "The Windows executable did not contain the current Personal Jira Board icons." }
     $PackagingArgs = @($OutputDirectory)
     if ($UseLocalAccount) { $PackagingArgs += "--use-local-account" }
     & node scripts/package-windows-runtime.mjs @PackagingArgs
